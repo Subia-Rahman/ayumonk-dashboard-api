@@ -1,0 +1,13 @@
+{
+  "type": "service_account",
+  "project_id": "dashboard-487010",
+  "private_key_id": "e9668789a574dee668ec4a941e18d35a512d90aa",
+  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC3f6QM7R1mPcw0\nKVsCb6PUUgyyL3fn7p+aA6le18ZwDO2tx4eWBz0PEBu3WVnF9paCaEBSfTikagPg\nHixumD6l1m9kInKpB3jDBj6ulXxBc5NwIJihfo/XGjuiwPPIC6E+BR8nmrQaJzeL\nu2Hd1B/MnJ5rUt7P4uZlVnzSMg8UP/I1X1Ua1eN3B35vWTXvzzOc/fQn6zsd1GsE\nD/IDu4FmoNwx3x0LEeW44m/+0VljZBI9sDAfUydR82cHscptxIEp+nc85G5PFRM7\n95eSFrzRjICyqFQX5ecGtGeHsyv6/+pT00mty9hNwRH6fSrLayUHSYm48f3PUBWB\nG/2te9xNAgMBAAECggEADpZ/c8AFmZzpfYh/u2wlqzNeRNInDaseSOLoPANNof3Q\nU9CF5zfD5mbCiITgpEjL9inhWmcP5QSnZZ6KEla/I3VhnXI4CSQ9BcznmDIhH529\n4TWhYxrwYEp6s2zBVKxI0TXpOdkZXu5/aRGCBveErNvf1xEBzqdJGrhRkjvrKZHs\nySOpD4fdPwuUmrsDdfL6E6Ua3mvNilXi3xAfsKUoH9u7LrUpTETgUVtTsBvY5Db0\nkbFoIb6/8EQhXUL+ACj1zwPPtTRbyTySCRRLCWCA68+XedZ5nL6s/G8XiWK1ijY/\n5/MDGy8B0PiDpKVr/oGv2GVhHms9RS1qQrvSOCIvXwKBgQDyHijsbXgMeKk4BlPV\n6k+h/iomeXPEEZrO6Cpz/ryq30/n6EcbUYasoUSP046osEnx0kDvokHSgxinO8+i\nHBAYvBiRyeyCHWk4pMvER9KL71P5MFYjLkbcq2LFnE458pRBMTmaEb4Lysk86N/r\nfwX2Z725vxmxHFORyV7mQ/NG5wKBgQDCBQ9HC2VHsKFDgr4SAFZWjcN4XdZDg0JN\nL3Ucu6sjMFRHWU4bXzb3ZY2PfzEXBpw0EkjcexkoyrQ+yX4f7d+b9+/dRa6btytS\ndqqxJv/9v3Ez4lqDGu3coYKBAoAbMAdwPw8CM41ecxTFt0kbHmGE3Iqh5t7z/Agd\nDo/JPDiAqwKBgBPxNAG1SowMbDO3IbSe5gw7uREOM+DUamHccZK4SqXwWs6JLUIs\nxuD1L4aBMGDolE6cuMiEHtPOBHvRy1pY4WKIK6XmcdqNvZryx+3U1Jy+C7acqpuf\nNir62tnX9AGF33w3J71u9K5X95dSvw7QmZcgGFpySRVzddauNWjV8/XFAoGAS8++\nUHxbbs/Ns5t6uX34PonWP0orVuYLGi3ZDQknrfBMfjSfGILz72d3EQMaI20pzA74\n+W4APrg2BfKlncRNA5y11ThNKftAqlBEEkSy8mvDyApCY8g5+WQConZfqD/0KB/7\ntVh/fNBq5Xbg0f/lCw1B/lE//QYWBYSTGoa1bVECgYEAtJyWzeSNREWtrqzcF3BO\ncuE4mqKjEsybZoZ913vMvjVhkmOB1aTDAmtOZAw5pKZWi9iWDN30Y2gSv/6+netv\nES0n0U8Xv18XSMLks/RqlzDepdIVxMWNpR/EcqIWtpmtL3j3jjq6wES6QDebO+NB\nHBWqL8+qRKF+ioJXTSDA7Cc=\n-----END PRIVATE KEY-----\n",
+  "client_email": "google-forms-dashobard-account@dashboard-487010.iam.gserviceaccount.com",
+  "client_id": "109174844498982856899",
+  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+  "token_uri": "https://oauth2.googleapis.com/token",
+  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/google-forms-dashobard-account%40dashboard-487010.iam.gserviceaccount.com",
+  "universe_domain": "googleapis.com"
+}
