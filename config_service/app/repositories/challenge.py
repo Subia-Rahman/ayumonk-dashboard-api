@@ -20,19 +20,23 @@ class ChallengeRepository:
         await self.db.refresh(obj)
         return obj
 
-    async def get_by_id(self, challenge_key):
+    async def get_by_id(self, challenge_key, company_id=None):
         stmt = select(Challenge).where(
             Challenge.challenge_key == challenge_key,
             Challenge.is_deleted == False,
         )
+        if company_id is not None:
+            stmt = stmt.where(Challenge.company_id == company_id)
         res = await self.db.execute(stmt)
         return res.scalar_one_or_none()
 
-    async def get_by_name_ci(self, name: str):
+    async def get_by_name_ci(self, name: str, company_id=None):
         stmt = select(Challenge).where(
             func.lower(Challenge.name) == func.lower(name),
             Challenge.is_deleted == False,
         )
+        if company_id is not None:
+            stmt = stmt.where(Challenge.company_id == company_id)
         res = await self.db.execute(stmt)
         return res.scalar_one_or_none()
 
@@ -41,6 +45,7 @@ class ChallengeRepository:
         *,
         skip: int,
         limit: int,
+        company_id=None,
         search: str | None = None,
         is_active: bool | None = True,
         kpi_key=None,
@@ -48,6 +53,8 @@ class ChallengeRepository:
         end_date=None,
     ):
         stmt = select(Challenge).where(Challenge.is_deleted == False)
+        if company_id is not None:
+            stmt = stmt.where(Challenge.company_id == company_id)
         if is_active is not None:
             stmt = stmt.where(Challenge.is_active == is_active)
         if search:

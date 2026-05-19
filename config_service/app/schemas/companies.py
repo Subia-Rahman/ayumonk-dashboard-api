@@ -10,6 +10,7 @@ class CompanyCreateRequest(BaseModel):
     size_bucket: str | None = None
     email: EmailStr | None = None
     phone: str | None = None
+    location: str | None = None
     no_of_employees: int | None = None
 
 
@@ -20,7 +21,13 @@ class CompanyAdminCreateRequest(BaseModel):
     emp_id: str = Field(..., min_length=1, max_length=100)
     full_name: str | None = None
     department: str | None = None
-    location: str | None = None
+    department_id: UUID | None = None
+    role_id: int | None = Field(default=None, description="FK to roles.id stored on company_users")
+    role_name: str | None = Field(
+        default=None,
+        max_length=50,
+        description="Legacy role string stored on users.role (e.g. 'Company Admin')",
+    )
     gender: str | None = None
     phone: str | None = None
     age_band: str | None = None
@@ -103,7 +110,9 @@ class CompanyAdminUpdateRequest(BaseModel):
     emp_id: str | None = None
     full_name: str | None = None
     department: str | None = None
-    location: str | None = None
+    department_id: UUID | None = None
+    role_id: int | None = None
+    role_name: str | None = Field(default=None, max_length=50)
     gender: str | None = None
     phone: str | None = None
     age_band: str | None = None
@@ -129,6 +138,7 @@ class CompanyUpdateRequest(BaseModel):
     size_bucket: str | None = None
     email: str | None = None
     phone: str | None = None
+    location: str | None = None
     no_of_employees: int | None = None
     is_active: bool | None = None
     admin: CompanyAdminUpdateRequest | None = None
@@ -141,6 +151,8 @@ class CompanyResponse(BaseModel):
     size_bucket: str | None = None
     email: str | None = None
     phone: str | None = None
+    location_id: UUID | None = None
+    location: str | None = None
     no_of_employees: int | None = None
     is_active: bool
     created_at: datetime

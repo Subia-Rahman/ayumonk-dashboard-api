@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field, validator, EmailStr
 class SessionCreateRequest(BaseModel):
     title: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
-    company_id: Optional[UUID] = None
+    company_id: UUID
 
 
 class SessionUpdateRequest(BaseModel):

@@ -2,6 +2,9 @@ from datetime import date
 import pandas as pd
 import math
 
+from sqlalchemy.exc import IntegrityError
+
+from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.kpi_questions import KPIQuestion
 from config_service.app.models.kpi_scoring import KPIScoring
 from config_service.app.schemas.kpi import KPICreateRequest, KPIUpdateRequest
@@ -136,17 +139,18 @@ class KPIService:
             "end_date_present": "end_date" in values,
         }
 
-    async def _upsert_theme(self, theme_data: dict):
-        theme = await self.theme_repo.get_by_name(theme_data["theme_display_name"])
+    async def _upsert_theme(self, theme_data: dict, company_id=None):
+        theme = await self.theme_repo.get_by_name(theme_data["theme_display_name"], company_id)
         if not theme:
             payload = ThemeCreateRequest(
+                company_id=company_id,
                 theme_display_name=theme_data["theme_display_name"],
                 description=theme_data["description"],
                 duration_days=theme_data["duration_days"],
                 target_audience=theme_data["target_audience"],
             )
             created_theme = await self.theme_service.create(payload)
-            return await self.theme_repo.get_by_id(created_theme.theme_key)
+            return await self.theme_repo.get_by_id(created_theme.theme_key, company_id)
 
         update_payload = {}
         if theme_data["description_present"]:
@@ -160,18 +164,21 @@ class KPIService:
             updated_theme = await self.theme_service.update(
                 theme.theme_key,
                 ThemeUpdateRequest(**update_payload),
+                company_id,
             )
-            return await self.theme_repo.get_by_id(updated_theme.theme_key)
+            return await self.theme_repo.get_by_id(updated_theme.theme_key, company_id)
 
         return theme
 
-    async def _upsert_kpi(self, theme, kpi_data: dict):
+    async def _upsert_kpi(self, theme, kpi_data: dict, company_id=None):
         kpi = await self.kpi_repo.get_by_name_and_theme(
             kpi_data["display_name"],
             theme.theme_key,
+            company_id,
         )
         if not kpi:
             payload = KPICreateRequest(
+                company_id=company_id,
                 display_name=kpi_data["display_name"],
                 theme_key=theme.theme_key,
                 start_date=kpi_data["start_date"],
@@ -180,7 +187,7 @@ class KPIService:
                 wi_weight=kpi_data["wi_weight"] if kpi_data["wi_weight"] is not None else 0.10,
             )
             created_kpi = await self.kpi_service.create(payload)
-            return await self.kpi_repo.get_by_id(created_kpi.kpi_key)
+            return await self.kpi_repo.get_by_id(created_kpi.kpi_key, company_id)
 
         update_payload = {}
         if kpi_data["start_date_present"]:
@@ -196,13 +203,45 @@ class KPIService:
             updated_kpi = await self.kpi_service.update(
                 kpi.kpi_key,
                 KPIUpdateRequest(**update_payload),
+                company_id,
             )
-            return await self.kpi_repo.get_by_id(updated_kpi.kpi_key)
+            return await self.kpi_repo.get_by_id(updated_kpi.kpi_key, company_id)
 
         return kpi
 
+    def _apply_excel_fields_to_question(
+        self,
+        question: KPIQuestion,
+        *,
+        company_id,
+        theme_key,
+        kpi_key,
+        question_text: str,
+        reverse_raw,
+    ) -> None:
+        """Authoritative: every Excel-owned column is rewritten so that
+        re-uploading the same row is idempotent and a row moved to a
+        different theme/KPI is re-linked. Called from both the insert
+        and the IntegrityError-recovery paths so the two stay in sync."""
+        question.company_id = company_id
+        question.theme = theme_key
+        question.kpi = kpi_key
+        question.question_text = question_text
+        question.reverse_code = self._parse_bool_yes_no(reverse_raw)
+
+    @staticmethod
+    def _is_question_code_unique_violation(exc: IntegrityError) -> bool:
+        text = str(exc.orig) if exc.orig else str(exc)
+        return "uq_kpi_questions_company_code_active" in text
+
     # ---------- main ----------
-    async def upload_kpi_from_excel(self, file):
+    async def upload_kpi_from_excel(self, file, company_id=None):
+        if company_id is None:
+            raise BusinessException(
+                message="company_id is required to upload KPI Excel",
+                status_code=422,
+            )
+
         df = pd.read_excel(file, dtype=object)
 
         created = 0
@@ -242,27 +281,71 @@ class KPIService:
                 )
 
                 # ---------- THEME ----------
-                theme = await self._upsert_theme(theme_data)
+                theme = await self._upsert_theme(theme_data, company_id)
 
                 # ---------- KPI ----------
-                kpi = await self._upsert_kpi(theme, kpi_data)
+                kpi = await self._upsert_kpi(theme, kpi_data, company_id)
 
                 # ---------- QUESTION ----------
-                question = await self.question_repo.get_by_code(code)
+                # Lookup is scoped by (company_id, question_code) so an
+                # update only touches rows owned by the incoming tenant.
+                # A concurrent uploader can still slip a row in between
+                # our SELECT and INSERT — the DB-level partial unique index
+                # uq_kpi_questions_company_code_active turns that into an
+                # IntegrityError on save, which we recover from below by
+                # re-fetching and updating the winner's row.
+                existing = await self.question_repo.get_by_code(code, company_id)
 
-                if question:
+                if existing:
+                    if existing.company_id != company_id:
+                        raise ValueError(
+                            "question_code belongs to a different company"
+                        )
+                    self._apply_excel_fields_to_question(
+                        existing,
+                        company_id=company_id,
+                        theme_key=theme.theme_key,
+                        kpi_key=kpi.kpi_key,
+                        question_text=question_text,
+                        reverse_raw=reverse_raw,
+                    )
+                    question = await self.question_repo.save(existing)
                     updated += 1
                 else:
-                    question = KPIQuestion(
-                        theme = theme.theme_key,
-                        question_code=code,
-                        kpi=kpi.kpi_key
+                    new_q = KPIQuestion(question_code=code)
+                    self._apply_excel_fields_to_question(
+                        new_q,
+                        company_id=company_id,
+                        theme_key=theme.theme_key,
+                        kpi_key=kpi.kpi_key,
+                        question_text=question_text,
+                        reverse_raw=reverse_raw,
                     )
-                    created += 1
-
-                question.question_text = question_text
-                question.reverse_code = self._parse_bool_yes_no(reverse_raw)
-                question = await self.question_repo.save(question)
+                    try:
+                        question = await self.question_repo.save(new_q)
+                        created += 1
+                    except IntegrityError as exc:
+                        if not self._is_question_code_unique_violation(exc):
+                            raise
+                        await self.question_repo.db.rollback()
+                        # A peer transaction inserted the same (company_id,
+                        # code) between our get_by_code and save. Re-fetch
+                        # the winner and convert this row into an update.
+                        winner = await self.question_repo.get_by_code(
+                            code, company_id
+                        )
+                        if winner is None:
+                            raise
+                        self._apply_excel_fields_to_question(
+                            winner,
+                            company_id=company_id,
+                            theme_key=theme.theme_key,
+                            kpi_key=kpi.kpi_key,
+                            question_text=question_text,
+                            reverse_raw=reverse_raw,
+                        )
+                        question = await self.question_repo.save(winner)
+                        updated += 1
 
                 # ---------- SCORING ----------
                 await self.scoring_repo.delete_by_question(question.id)
@@ -282,6 +365,7 @@ class KPIService:
                     # save in DB
                     await self.scoring_repo.create(
                         KPIScoring(
+                            company_id=company_id,
                             question_id=question.id,
                             option_number=i,
                             option_text=option_text,
@@ -303,8 +387,8 @@ class KPIService:
             "errors": errors
         }
 
-    async def get_hierarchy(self) -> list[ThemeHierarchyResponse]:
-        rows = await self.question_repo.get_hierarchy_rows()
+    async def get_hierarchy(self, company_id=None) -> list[ThemeHierarchyResponse]:
+        rows = await self.question_repo.get_hierarchy_rows(company_id)
         themes: dict = {}
 
         for row in rows:

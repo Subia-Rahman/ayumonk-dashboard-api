@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from authentication_service.app.core.dependencies import require_roles
+from authentication_service.app.core.dependencies import get_current_user
+from authentication_service.app.core.rbac import require_permission
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.db import get_db
@@ -31,7 +32,7 @@ router = APIRouter(prefix="/admin/kpi-suggestion-mappings", tags=["admin-kpi-sug
 async def create_kpi_suggestion_mapping(
     payload: KPISuggestionMappingCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:create")),
 ):
     logger.info("REQUEST | create_kpi_suggestion_mapping | user_id=%s", current_user.user_id)
     db.info["user_id"] = current_user.user_id
@@ -69,7 +70,7 @@ async def list_kpi_suggestion_mappings(
     trigger_mode: str | None = None,
     is_active: bool | None = True,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:read")),
 ):
     logger.info(
         "REQUEST | list_kpi_suggestion_mappings | user_id=%s | skip=%s | limit=%s",
@@ -104,7 +105,7 @@ async def list_kpi_suggestion_mappings(
 async def get_kpi_suggestion_mapping(
     mapping_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:read")),
 ):
     logger.info(
         "REQUEST | get_kpi_suggestion_mapping | user_id=%s | mapping_id=%s",
@@ -135,7 +136,7 @@ async def update_kpi_suggestion_mapping(
     mapping_id: UUID,
     payload: KPISuggestionMappingUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:update")),
 ):
     logger.info(
         "REQUEST | update_kpi_suggestion_mapping | user_id=%s | mapping_id=%s",
@@ -172,7 +173,7 @@ async def update_kpi_suggestion_mapping(
 async def delete_kpi_suggestion_mapping(
     mapping_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:delete")),
 ):
     logger.info(
         "REQUEST | delete_kpi_suggestion_mapping | user_id=%s | mapping_id=%s",

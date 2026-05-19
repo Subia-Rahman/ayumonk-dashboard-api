@@ -6,15 +6,18 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 from config_service.app.api.v1 import routes
+from config_service.app.api import push as push_api
 from config_service.app.core.db import engine, Base
 import asyncio
 from config_service.app.core.audit import events
+from config_service.app.core.scheduler import shutdown_scheduler, start_scheduler
 from fastapi.exceptions import RequestValidationError
 from config_service.app.models import *
 
 def create_app():
     app = FastAPI(title="config_service", docs_url=None, redoc_url=None)
     app.include_router(routes.router)
+    app.include_router(push_api.router)
     return app
 
 setup_logging()
@@ -180,3 +183,9 @@ async def startup():
     # in dev we create tables automatically; use alembic in prod
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    start_scheduler()
+
+
+@app.on_event("shutdown")
+async def shutdown():
+    shutdown_scheduler()

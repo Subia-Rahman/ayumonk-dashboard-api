@@ -1,4 +1,5 @@
 from datetime import date
+from uuid import UUID
 
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.challenge import Challenge
@@ -24,12 +25,13 @@ class ChallengeService:
         self.kpi_challenge_repo = kpi_challenge_repo
 
     async def create(self, payload: ChallengeCreateRequest) -> ChallengeDetailResponse:
-        existing = await self.challenge_repo.get_by_name_ci(payload.name)
+        existing = await self.challenge_repo.get_by_name_ci(payload.name, payload.company_id)
         if existing:
             raise BusinessException(message="Challenge name already exists", status_code=409)
 
         challenge = await self.challenge_repo.create(
             Challenge(
+                company_id=payload.company_id,
                 name=payload.name,
                 description=payload.description,
                 challenge_type=payload.challenge_type,
@@ -42,7 +44,11 @@ class ChallengeService:
 
         mappings = []
         if payload.kpi_mappings:
-            mappings = await self._create_mappings(challenge.challenge_key, payload.kpi_mappings)
+            mappings = await self._create_mappings(
+                challenge.challenge_key,
+                payload.kpi_mappings,
+                company_id=challenge.company_id,
+            )
 
         start_date, end_date = self._compute_date_range(mappings)
         kpi_keys = self._compute_kpi_keys(mappings)
@@ -61,6 +67,7 @@ class ChallengeService:
         *,
         skip: int,
         limit: int,
+        company_id: UUID | None = None,
         search: str | None,
         is_active: bool | None,
         kpi_key=None,
@@ -70,6 +77,7 @@ class ChallengeService:
         items, total = await self.challenge_repo.list(
             skip=skip,
             limit=limit,
+            company_id=company_id,
             search=search,
             is_active=is_active,
             kpi_key=kpi_key,
@@ -79,11 +87,9 @@ class ChallengeService:
         responses = []
         for item in items:
             mappings = await self.kpi_challenge_repo.list_by_challenge(item.challenge_key)
-            start_date, end_date = self._compute_date_range(mappings)
+            sd, ed = self._compute_date_range(mappings)
             kpi_keys = self._compute_kpi_keys(mappings)
-            responses.append(
-                self._to_response(item, start_date=start_date, end_date=end_date, kpi_keys=kpi_keys)
-            )
+            responses.append(self._to_response(item, start_date=sd, end_date=ed, kpi_keys=kpi_keys))
         return ChallengeListResponse(
             items=responses,
             total=total,
@@ -91,8 +97,8 @@ class ChallengeService:
             limit=limit,
         )
 
-    async def get(self, challenge_key) -> ChallengeDetailResponse:
-        challenge = await self.challenge_repo.get_by_id(challenge_key)
+    async def get(self, challenge_key, company_id: UUID | None = None) -> ChallengeDetailResponse:
+        challenge = await self.challenge_repo.get_by_id(challenge_key, company_id)
         if not challenge:
             raise BusinessException(message="Challenge not found", status_code=404)
 
@@ -109,13 +115,13 @@ class ChallengeService:
             kpi_mappings=[self._to_mapping_response(m) for m in mappings],
         )
 
-    async def update(self, challenge_key, payload: ChallengeUpdateRequest) -> ChallengeResponse:
-        challenge = await self.challenge_repo.get_by_id(challenge_key)
+    async def update(self, challenge_key, payload: ChallengeUpdateRequest, company_id: UUID | None = None) -> ChallengeResponse:
+        challenge = await self.challenge_repo.get_by_id(challenge_key, company_id)
         if not challenge:
             raise BusinessException(message="Challenge not found", status_code=404)
 
         if payload.name and payload.name != challenge.name:
-            existing = await self.challenge_repo.get_by_name_ci(payload.name)
+            existing = await self.challenge_repo.get_by_name_ci(payload.name, challenge.company_id)
             if existing and existing.challenge_key != challenge.challenge_key:
                 raise BusinessException(message="Challenge name already exists", status_code=409)
             challenge.name = payload.name
@@ -132,7 +138,6 @@ class ChallengeService:
             challenge.icon = payload.icon
         if payload.is_daily is not None:
             challenge.is_daily = payload.is_daily
-
         if payload.is_active is not None:
             challenge.is_active = payload.is_active
 
@@ -140,41 +145,37 @@ class ChallengeService:
         mappings = await self.kpi_challenge_repo.list_by_challenge(challenge_key)
         start_date, end_date = self._compute_date_range(mappings)
         kpi_keys = self._compute_kpi_keys(mappings)
-        return self._to_response(
-            challenge,
-            start_date=start_date,
-            end_date=end_date,
-            kpi_keys=kpi_keys,
-        )
+        return self._to_response(challenge, start_date=start_date, end_date=end_date, kpi_keys=kpi_keys)
 
-    async def delete(self, challenge_key) -> ChallengeResponse:
-        challenge = await self.challenge_repo.get_by_id(challenge_key)
+    async def delete(self, challenge_key, company_id: UUID | None = None) -> ChallengeResponse:
+        challenge = await self.challenge_repo.get_by_id(challenge_key, company_id)
         if not challenge:
             raise BusinessException(message="Challenge not found", status_code=404)
 
         challenge.is_active = False
+        challenge.is_deleted = True
         challenge = await self.challenge_repo.update(challenge)
         mappings = await self.kpi_challenge_repo.list_by_challenge(challenge_key)
         start_date, end_date = self._compute_date_range(mappings)
         kpi_keys = self._compute_kpi_keys(mappings)
-        return self._to_response(
-            challenge,
-            start_date=start_date,
-            end_date=end_date,
-            kpi_keys=kpi_keys,
-        )
+        return self._to_response(challenge, start_date=start_date, end_date=end_date, kpi_keys=kpi_keys)
 
     async def add_kpi_mapping(
         self,
         *,
         challenge_key,
         mapping: ChallengeKPIMappingRequest,
+        company_id: UUID | None = None,
     ) -> ChallengeKPIMappingResponse:
-        challenge = await self.challenge_repo.get_by_id(challenge_key)
+        challenge = await self.challenge_repo.get_by_id(challenge_key, company_id)
         if not challenge:
             raise BusinessException(message="Challenge not found", status_code=404)
 
-        mapping_rows = await self._create_mappings(challenge_key, [mapping])
+        mapping_rows = await self._create_mappings(
+            challenge_key,
+            [mapping],
+            company_id=challenge.company_id,
+        )
         return self._to_mapping_response(mapping_rows[0])
 
     async def list_active_for_kpi(
@@ -183,8 +184,9 @@ class ChallengeService:
         kpi_key,
         start_date: date | None,
         end_date: date | None,
+        company_id: UUID | None = None,
     ) -> list[KPIChallengeActiveResponse]:
-        kpi = await self.kpi_repo.get_by_id(kpi_key)
+        kpi = await self.kpi_repo.get_by_id(kpi_key, company_id)
         if not kpi:
             raise BusinessException(message="KPI not found", status_code=404)
 
@@ -215,10 +217,12 @@ class ChallengeService:
         self,
         challenge_key,
         mappings: list[ChallengeKPIMappingRequest],
+        *,
+        company_id,
     ) -> list[KPIChallenge]:
         kpi_ids = {m.kpi_key for m in mappings}
         for kpi_id in kpi_ids:
-            kpi = await self.kpi_repo.get_by_id(kpi_id)
+            kpi = await self.kpi_repo.get_by_id(kpi_id, company_id)
             if not kpi:
                 raise BusinessException(
                     message="KPI not found",
@@ -228,6 +232,7 @@ class ChallengeService:
 
         entities = [
             KPIChallenge(
+                company_id=company_id,
                 challenge_key=challenge_key,
                 kpi_key=mapping.kpi_key,
                 start_date=mapping.start_date,
@@ -247,6 +252,7 @@ class ChallengeService:
     ) -> ChallengeResponse:
         return ChallengeResponse(
             challenge_key=challenge.challenge_key,
+            company_id=challenge.company_id,
             name=challenge.name,
             description=challenge.description,
             challenge_type=challenge.challenge_type,
@@ -276,8 +282,7 @@ class ChallengeService:
     def _compute_kpi_keys(mappings: list[KPIChallenge]) -> list:
         if not mappings:
             return []
-        keys = {m.kpi_key for m in mappings if m.kpi_key}
-        return list(keys)
+        return list({m.kpi_key for m in mappings if m.kpi_key})
 
     @staticmethod
     def _to_mapping_response(mapping: KPIChallenge) -> ChallengeKPIMappingResponse:

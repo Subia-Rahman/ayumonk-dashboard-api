@@ -28,6 +28,16 @@ class SuggestionRepository:
         res = await self.db.execute(stmt)
         return res.scalar_one_or_none()
 
+    async def list_by_ids(self, suggestion_ids: list):
+        if not suggestion_ids:
+            return []
+        stmt = select(Suggestion).where(
+            Suggestion.id.in_(suggestion_ids),
+            Suggestion.is_deleted == False,
+        )
+        res = await self.db.execute(stmt)
+        return list(res.scalars().all())
+
     async def list(
         self,
         *,

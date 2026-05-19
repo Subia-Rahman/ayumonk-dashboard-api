@@ -19,6 +19,7 @@ class ChallengeKPIMappingRequest(BaseModel):
 
 
 class ChallengeCreateRequest(BaseModel):
+    company_id: UUID
     name: str = Field(..., min_length=1, max_length=255)
     challenge_type: str = Field(..., min_length=1, max_length=20)
     description: Optional[str] = None
@@ -74,6 +75,7 @@ class ChallengeUpdateRequest(BaseModel):
 
 class ChallengeResponse(BaseModel):
     challenge_key: UUID
+    company_id: UUID | None = None
     name: str
     challenge_type: str
     description: Optional[str]

@@ -3,11 +3,14 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from authentication_service.app.core.dependencies import require_roles
+from authentication_service.app.core.dependencies import get_current_user
+from authentication_service.app.core.rbac import require_permission
+from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.db import get_db
 from config_service.app.core.response import APIResponse
 from config_service.app.core.response_utils import error_response, success_response
+from config_service.app.repositories.company_users import UserRepository
 from config_service.app.repositories.sessions import SessionRepository
 from config_service.app.schemas.sessions import (
     SessionCreateRequest,
@@ -36,30 +39,37 @@ logger = get_file_logger(name="sessions_api", prefix="sessions_api")
 router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 
+async def _resolve_company_id(current_user, db: AsyncSession, company_id_param: UUID | None = None):
+    if getattr(current_user, "is_platform_admin", False):
+        return company_id_param
+    tenant_id = getattr(current_user, "tenant_id", None)
+    if tenant_id is None:
+        raise BusinessException(message="Admin company not found", status_code=403)
+    return tenant_id
+
+
 @router.get("", response_model=APIResponse[list[SessionSummaryResponse]])
 async def list_sessions(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
+    company_id: UUID | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:read")),
 ):
     logger.info(
         "REQUEST | list_sessions | user_id=%s | skip=%s | limit=%s",
-        current_user.user_id,
-        skip,
-        limit,
+        current_user.user_id, skip, limit,
     )
     db.info["user_id"] = current_user.user_id
 
     try:
+        resolved = await _resolve_company_id(current_user, db, company_id)
         service = SessionService(SessionRepository(db))
-        result = await service.list_sessions(skip=skip, limit=limit)
-        logger.info(
-            "RESPONSE | list_sessions | user_id=%s | count=%s",
-            current_user.user_id,
-            len(result),
-        )
+        result = await service.list_sessions(skip=skip, limit=limit, company_id=resolved)
+        logger.info("RESPONSE | list_sessions | user_id=%s | count=%s", current_user.user_id, len(result))
         return success_response(data=result, message="Sessions fetched successfully")
+    except BusinessException as e:
+        return error_response(message=e.message, status_code=e.status_code, errors=e.errors)
     except Exception:
         logger.exception("ERROR | list_sessions | user_id=%s", current_user.user_id)
         return error_response(message="Failed to fetch sessions", status_code=500)
@@ -69,7 +79,7 @@ async def list_sessions(
 async def create_session(
     payload: SessionCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:create")),
 ):
     logger.info("REQUEST | create_session | user_id=%s", current_user.user_id)
     db.info["user_id"] = current_user.user_id
@@ -84,7 +94,7 @@ async def add_questions_to_session(
     session_id: UUID,
     payload: SessionQuestionAddRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:update")),
 ):
     logger.info(
         "REQUEST | add_questions_to_session | user_id=%s | session_id=%s",
@@ -102,7 +112,7 @@ async def add_questions_to_session(
 async def list_session_questions(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:read")),
 ):
     logger.info(
         "REQUEST | list_session_questions | user_id=%s | session_id=%s",
@@ -128,7 +138,7 @@ async def set_session_questions(
     session_id: UUID,
     payload: SessionQuestionSetRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:update")),
 ):
     logger.info(
         "REQUEST | set_session_questions | user_id=%s | session_id=%s",
@@ -161,7 +171,7 @@ async def remove_session_questions(
     session_id: UUID,
     payload: SessionQuestionRemoveRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:delete")),
 ):
     logger.info(
         "REQUEST | remove_session_questions | user_id=%s | session_id=%s",
@@ -194,7 +204,7 @@ async def remove_single_session_question(
     session_id: UUID,
     question_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:delete")),
 ):
     logger.info(
         "REQUEST | remove_single_session_question | user_id=%s | session_id=%s | question_id=%s",
@@ -227,7 +237,7 @@ async def update_session_question_order(
     session_id: UUID,
     payload: SessionQuestionOrderUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:update")),
 ):
     logger.info(
         "REQUEST | update_session_question_order | user_id=%s | session_id=%s",
@@ -246,20 +256,22 @@ async def activate_or_deactivate_session(
     session_id: UUID,
     payload: SessionStatusUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:update")),
 ):
     logger.info(
         "REQUEST | activate_or_deactivate_session | user_id=%s | session_id=%s | is_active=%s",
-        current_user.user_id,
-        str(session_id),
-        payload.is_active,
+        current_user.user_id, str(session_id), payload.is_active,
     )
     db.info["user_id"] = current_user.user_id
 
-    service = SessionService(SessionRepository(db))
-    result = await service.update_session_status(session_id=session_id, is_active=payload.is_active)
-    message = "Session activated successfully" if payload.is_active else "Session deactivated successfully"
-    return success_response(data=result, message=message)
+    try:
+        resolved = await _resolve_company_id(current_user, db)
+        service = SessionService(SessionRepository(db))
+        result = await service.update_session_status(session_id=session_id, is_active=payload.is_active, company_id=resolved)
+        message = "Session activated successfully" if payload.is_active else "Session deactivated successfully"
+        return success_response(data=result, message=message)
+    except BusinessException as e:
+        return error_response(message=e.message, status_code=e.status_code, errors=e.errors)
 
 
 @router.patch("/{session_id}", response_model=APIResponse[SessionSummaryResponse])
@@ -267,29 +279,25 @@ async def update_session(
     session_id: UUID,
     payload: SessionUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:update")),
 ):
     logger.info(
         "REQUEST | update_session | user_id=%s | session_id=%s",
-        current_user.user_id,
-        str(session_id),
+        current_user.user_id, str(session_id),
     )
     db.info["user_id"] = current_user.user_id
 
     try:
+        resolved = await _resolve_company_id(current_user, db)
         service = SessionService(SessionRepository(db))
-        result = await service.update_session_details(session_id=session_id, payload=payload)
+        result = await service.update_session_details(session_id=session_id, payload=payload, company_id=resolved)
         return success_response(data=result, message="Session updated successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | update_session | %s", e.message)
         return error_response(message=e.message, status_code=e.status_code, errors=e.errors)
     except ValidationError as e:
         logger.warning("VALIDATION_ERROR | update_session | %s", e.errors())
-        return error_response(
-            message="Invalid session payload",
-            status_code=422,
-            errors=e.errors(),
-        )
+        return error_response(message="Invalid session payload", status_code=422, errors=e.errors())
     except Exception:
         logger.exception("ERROR | update_session | user_id=%s", current_user.user_id)
         return error_response(message="Failed to update session", status_code=500)
@@ -299,18 +307,18 @@ async def update_session(
 async def delete_session(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:delete")),
 ):
     logger.info(
         "REQUEST | delete_session | user_id=%s | session_id=%s",
-        current_user.user_id,
-        str(session_id),
+        current_user.user_id, str(session_id),
     )
     db.info["user_id"] = current_user.user_id
 
     try:
+        resolved = await _resolve_company_id(current_user, db)
         service = SessionService(SessionRepository(db))
-        result = await service.delete_session(session_id=session_id)
+        result = await service.delete_session(session_id=session_id, company_id=resolved)
         return success_response(data=result, message="Session deleted successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | delete_session | %s", e.message)
@@ -323,7 +331,7 @@ async def delete_session(
 @router.get("/my-submissions", response_model=APIResponse[list])
 async def get_my_submissions(
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN", "USER")),
+    current_user=Depends(require_permission("sessions:read")),
 ):
     logger.info(
         "REQUEST | get_my_submissions | user_id=%s | email=%s",
@@ -346,7 +354,7 @@ async def get_my_session_links(
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN", "USER")),
+    current_user=Depends(require_permission("sessions:read")),
 ):
     logger.info(
         "REQUEST | get_my_session_links | user_id=%s | email=%s | skip=%s | limit=%s",
@@ -377,7 +385,7 @@ async def get_my_session_links(
 async def get_session_suggestions(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN", "USER")),
+    current_user=Depends(require_permission("sessions:read")),
 ):
     logger.info(
         "REQUEST | get_session_suggestions | user_id=%s | session_id=%s",
@@ -405,7 +413,7 @@ async def get_session_suggestions(
 async def get_session_details(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:read")),
 ):
     logger.info(
         "REQUEST | get_session_details | user_id=%s | session_id=%s",
@@ -424,7 +432,7 @@ async def generate_google_form(
     session_id: UUID,
     payload: SessionGenerateFormRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:update")),
 ):
     logger.info(
         "REQUEST | generate_google_form | user_id=%s | session_id=%s | force_regenerate=%s",
@@ -446,7 +454,7 @@ async def generate_google_form(
 async def get_session_form_preview(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:read")),
 ):
     logger.info(
         "REQUEST | get_session_form_preview | user_id=%s | session_id=%s",
@@ -500,7 +508,7 @@ async def get_session_form(
 async def publish_session_form(
     session_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN")),
+    current_user=Depends(require_permission("sessions:update")),
 ):
     logger.info(
         "REQUEST | publish_session_form | user_id=%s | session_id=%s",

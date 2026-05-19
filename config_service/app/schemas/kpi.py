@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, validator
 
 
 class KPICreateRequest(BaseModel):
+    company_id: UUID
     display_name: str = Field(..., min_length=1, max_length=255)
     theme_key: UUID
     start_date: Optional[date] = None
@@ -50,6 +51,7 @@ class KPIUpdateRequest(BaseModel):
 
 class KPIResponse(BaseModel):
     kpi_key: UUID
+    company_id: UUID | None = None
     display_name: str
     theme_key: UUID
     start_date: Optional[date]

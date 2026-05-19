@@ -16,6 +16,10 @@ from config_service.app.schemas.companies import (
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.company_users import CompanyUser
 from config_service.app.schemas.company_users import CompanyUserResponse
+from config_service.app.services.locations import (
+    get_location_names,
+    get_or_create_location,
+)
 from authentication_service.app.models.user import User
 from authentication_service.app.repositories.user_repo import AuthUserRepository
 from config_service.app.core.config import settings
@@ -33,10 +37,14 @@ class CompanyService:
     async def list_companies(self, skip: int = 0, limit: int = 100) -> list[CompanyResponse]:
         companies = await self.repo.list(skip=skip, limit=limit)
         admin_map = await self._build_company_admin_map([c.id for c in companies])
+        location_map = await get_location_names(
+            [c.location_id for c in companies], self.db
+        )
         results: list[CompanyResponse] = []
         for company in companies:
             resp = CompanyResponse.model_validate(company)
             resp.admin = admin_map.get(company.id)
+            resp.location = location_map.get(company.location_id)
             results.append(resp)
         return results
 
@@ -67,12 +75,16 @@ class CompanyService:
                 skipped.append(company_name)
                 continue
 
+            location_id = await get_or_create_location(
+                clean_str(row.get("location")), self.db
+            )
             company = Company(
                 company_name=company_name,
                 industry=clean_str(row.get("industry")),
                 size_bucket=clean_str(row.get("size_bucket")),
                 email=clean_str(row.get("email")),
                 phone=clean_str(row.get("phone")),
+                location_id=location_id,
                 no_of_employees=clean_int(row.get("no_of_employees"))
             )
 
@@ -89,8 +101,10 @@ class CompanyService:
         if not company:
             raise BusinessException(message="Company not found", status_code=404)
         admin_map = await self._build_company_admin_map([company.id])
+        location_map = await get_location_names([company.location_id], self.db)
         resp = CompanyResponse.model_validate(company)
         resp.admin = admin_map.get(company.id)
+        resp.location = location_map.get(company.location_id)
         return resp
 
     async def update_company(self, company_id, payload: CompanyUpdateRequest) -> CompanyResponse:
@@ -112,6 +126,10 @@ class CompanyService:
             company.email = payload.email
         if payload.phone is not None:
             company.phone = payload.phone
+        if "location" in payload.model_fields_set:
+            company.location_id = await get_or_create_location(
+                payload.location, self.db
+            )
         if payload.no_of_employees is not None:
             company.no_of_employees = payload.no_of_employees
         if payload.is_active is not None:
@@ -123,8 +141,10 @@ class CompanyService:
             await self._upsert_company_admin(company, payload.admin)
 
         admin_map = await self._build_company_admin_map([company.id])
+        location_map = await get_location_names([company.location_id], self.db)
         resp = CompanyResponse.model_validate(company)
         resp.admin = admin_map.get(company.id)
+        resp.location = location_map.get(company.location_id)
         return resp
 
     async def delete_company(self, company_id) -> CompanyResponse:
@@ -145,6 +165,7 @@ class CompanyService:
         if existing:
             raise BusinessException(message="Company name already exists", status_code=409)
 
+        location_id = await get_or_create_location(payload.company.location, self.db)
         company = await self.repo.create(
             Company(
                 company_name=payload.company.company_name.strip(),
@@ -152,6 +173,7 @@ class CompanyService:
                 size_bucket=payload.company.size_bucket,
                 email=payload.company.email,
                 phone=payload.company.phone,
+                location_id=location_id,
                 no_of_employees=payload.company.no_of_employees,
             )
         )
@@ -159,8 +181,11 @@ class CompanyService:
         if payload.admin is not None:
             admin_resp = await self._create_company_admin(company, payload.admin)
 
+        location_map = await get_location_names([company.location_id], self.db)
+        company_resp = CompanyResponse.model_validate(company)
+        company_resp.location = location_map.get(company.location_id)
         return CompanyCreateWithAdminResponse(
-            company=CompanyResponse.model_validate(company),
+            company=company_resp,
             admin=admin_resp,
         )
 
@@ -193,7 +218,8 @@ class CompanyService:
                 emp_id=payload.emp_id,
                 full_name=payload.full_name,
                 department=payload.department,
-                location=payload.location,
+                department_id=payload.department_id,
+                role_id=payload.role_id,
                 gender=payload.gender,
                 phone=payload.phone,
                 age_band=payload.age_band,
@@ -207,7 +233,7 @@ class CompanyService:
             username=payload.emp_id,
             email=payload.email,
             hashed_password=payload.password,
-            role="ADMIN",
+            role=payload.role_name or "ADMIN",
             is_active=payload.is_active,
         )
         await self.auth_repo.create(auth_user)
@@ -276,7 +302,8 @@ class CompanyService:
                 emp_id=payload.emp_id,
                 full_name=payload.full_name,
                 department=payload.department,
-                location=payload.location,
+                department_id=payload.department_id,
+                role_id=payload.role_id,
                 gender=payload.gender,
                 phone=payload.phone,
                 age_band=payload.age_band,
@@ -290,7 +317,7 @@ class CompanyService:
             username=payload.emp_id,
             email=payload.email,
             hashed_password=payload.password,
-            role="ADMIN",
+            role=payload.role_name or "ADMIN",
             is_active=payload.is_active,
         )
         await self.auth_repo.create(auth_user)
@@ -329,7 +356,9 @@ class CompanyService:
                     emp_id=payload.emp_id,
                     full_name=payload.full_name,
                     department=payload.department,
-                    location=payload.location,
+                    department_id=payload.department_id,
+                    role_id=payload.role_id,
+                    role_name=payload.role_name,
                     gender=payload.gender,
                     phone=payload.phone,
                     age_band=payload.age_band,
@@ -359,8 +388,10 @@ class CompanyService:
             company_user.full_name = payload.full_name
         if payload.department is not None:
             company_user.department = payload.department
-        if payload.location is not None:
-            company_user.location = payload.location
+        if payload.department_id is not None:
+            company_user.department_id = payload.department_id
+        if payload.role_id is not None:
+            company_user.role_id = payload.role_id
         if payload.gender is not None:
             company_user.gender = payload.gender
         if payload.phone is not None:
@@ -384,6 +415,8 @@ class CompanyService:
             auth_user.is_active = payload.is_active
         if payload.email and payload.email != existing_admin.email:
             auth_user.email = new_email
+        if payload.role_name is not None:
+            auth_user.role = payload.role_name
 
         await self.auth_repo.update(auth_user)
 

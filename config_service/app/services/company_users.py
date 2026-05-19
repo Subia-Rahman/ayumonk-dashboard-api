@@ -1,7 +1,11 @@
 import secrets
 import string
+from uuid import UUID
 
 from authentication_service.app.core.security import hash_password
+from authentication_service.app.repositories.role_policy_repo import RolePolicyRepository
+from authentication_service.app.repositories.role_repo import RoleRepository
+from authentication_service.app.repositories.policy_repo import PolicyRepository
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 import pandas as pd
@@ -12,6 +16,7 @@ from config_service.app.core.config import settings
 from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.repositories.company_users import UserRepository
 from config_service.app.repositories.companies import CompanyRepository
+from config_service.app.repositories.departments import DepartmentRepository
 from config_service.app.models.company_users import CompanyUser
 from config_service.app.schemas.company_users import (
     ALLOWED_AGE_BANDS,
@@ -29,7 +34,54 @@ class UserService:
         self.logger = get_file_logger(name="company_users_service", prefix="company_users_service")
         self.repo = UserRepository(db)
         self.company_repo = CompanyRepository(db)
+        self.dept_repo = DepartmentRepository(db)
+        self.role_repo = RoleRepository(db)
+        self.role_policy_repo = RolePolicyRepository(db)
+        self.policy_repo = PolicyRepository(db)
         self.auth_repo = AuthUserRepository(db)  # for users table
+
+    async def _resolve_role_scopes(self, role_id: int, tenant_id: UUID) -> set[str]:
+        """Return the set of policy scopes attached to a role."""
+        rows = await self.role_policy_repo.list_by_role(role_id, tenant_id)
+        if not rows:
+            return set()
+        policies = await self.policy_repo.list_by_ids([r.policy_id for r in rows])
+        return {p.scope for p in policies if getattr(p, "scope", None)}
+
+    async def _validate_role_and_department(
+        self,
+        *,
+        role_id: int | None,
+        department_id: UUID | None,
+        company_id: UUID,
+    ) -> None:
+        """Validate role exists in the tenant; if any of its policies have
+        scope='department', enforce that department_id is provided and
+        belongs to the same tenant."""
+        if role_id is None:
+            return
+        role = await self.role_repo.get_by_id(role_id)
+        if role is None or role.tenant_id != company_id:
+            raise BusinessException(
+                message="Role not found for this company",
+                status_code=400,
+            )
+
+        scopes = await self._resolve_role_scopes(role_id, company_id)
+        requires_dept = "department" in scopes
+        if requires_dept and department_id is None:
+            raise BusinessException(
+                message="department_id is required for department-scoped roles",
+                status_code=400,
+            )
+
+        if department_id is not None:
+            dept = await self.dept_repo.get_by_id(department_id, company_id=company_id)
+            if dept is None:
+                raise BusinessException(
+                    message="Department not found for this company",
+                    status_code=400,
+                )
 
     async def upload_users_from_excel(self, file) -> dict:
         df = pd.read_excel(file)
@@ -117,7 +169,6 @@ class UserService:
                 emp_id=emp_id,
                 full_name=clean_str(row.get("full_name")),
                 department=clean_str(row.get("department")),
-                location=clean_str(row.get("location")),
                 gender=clean_str(row.get("gender")),
                 phone=clean_str(row.get("phone")),
                 age_band=age_band,
@@ -153,6 +204,22 @@ class UserService:
         if not company:
             raise BusinessException(message="Company not found", status_code=404)
 
+        await self._validate_role_and_department(
+            role_id=payload.role_id,
+            department_id=payload.department_id,
+            company_id=payload.company_id,
+        )
+
+        # Mirror the department label from the FK lookup when provided so the
+        # legacy `department` string column stays in sync.
+        legacy_department = payload.department
+        if payload.department_id is not None:
+            dept = await self.dept_repo.get_by_id(
+                payload.department_id, company_id=payload.company_id
+            )
+            if dept and not legacy_department:
+                legacy_department = dept.name
+
         await self._validate_company_user_uniqueness(
             company_id=payload.company_id,
             email=payload.email,
@@ -164,8 +231,9 @@ class UserService:
                 CompanyUser(
                     emp_id=payload.emp_id,
                     full_name=payload.full_name,
-                    department=payload.department,
-                    location=payload.location,
+                    department=legacy_department,
+                    department_id=payload.department_id,
+                    role_id=payload.role_id,
                     gender=payload.gender,
                     phone=payload.phone,
                     age_band=payload.age_band,
@@ -182,12 +250,18 @@ class UserService:
             username=payload.emp_id or payload.email,
             email=payload.email,
             company_id=payload.company_id,
+            role_id=payload.role_id,
             company_name=getattr(company, "company_name", None),
         )
         if warning_message:
             warning_message = "User created successfully, but failed to send email."
 
-        return CompanyUserResponse.model_validate(user), warning_message
+        resp = CompanyUserResponse.model_validate(user)
+        if user.role_id is not None:
+            role = await self.role_repo.get_by_id(user.role_id)
+            if role:
+                resp.role_name = role.name
+        return resp, warning_message
 
     async def list_users(
         self,
@@ -195,6 +269,9 @@ class UserService:
         skip: int,
         limit: int,
         company_id=None,
+        department_id=None,
+        restrict_to_id=None,
+        role_id: int | None = None,
         search: str | None = None,
         is_active: bool | None = True,
     ) -> CompanyUserListResponse:
@@ -202,32 +279,74 @@ class UserService:
             skip=skip,
             limit=limit,
             company_id=company_id,
+            department_id=department_id,
+            restrict_to_id=restrict_to_id,
+            role_id=role_id,
             search=search,
             is_active=is_active,
         )
+
+        role_name_map = await self._role_name_map([item.role_id for item in items])
+
+        responses: list[CompanyUserResponse] = []
+        for item in items:
+            resp = CompanyUserResponse.model_validate(item)
+            resp.role_name = role_name_map.get(item.role_id)
+            responses.append(resp)
+
         return CompanyUserListResponse(
-            items=[CompanyUserResponse.model_validate(item) for item in items],
+            items=responses,
             total=total,
             skip=skip,
             limit=limit,
         )
 
-    async def get_user(self, user_id) -> CompanyUserResponse:
-        user = await self.repo.get_by_id(user_id)
+    async def get_user(self, user_id, company_id=None) -> CompanyUserResponse:
+        user = await self.repo.get_by_id(user_id, company_id)
         if not user:
             raise BusinessException(message="Company user not found", status_code=404)
-        return CompanyUserResponse.model_validate(user)
+        resp = CompanyUserResponse.model_validate(user)
+        if user.role_id is not None:
+            role = await self.role_repo.get_by_id(user.role_id)
+            if role:
+                resp.role_name = role.name
+        return resp
 
-    async def update_user(self, user_id, payload: CompanyUserUpdateRequest) -> CompanyUserResponse:
-        user = await self.repo.get_by_id(user_id)
+    async def _role_name_map(self, role_ids) -> dict[int, str]:
+        unique_ids = {rid for rid in role_ids if rid is not None}
+        if not unique_ids:
+            return {}
+        from sqlalchemy import select as _select
+        from authentication_service.app.models.role import Role
+        result = await self.db.execute(_select(Role).where(Role.id.in_(unique_ids)))
+        return {role.id: role.name for role in result.scalars().all()}
+
+    async def update_user(self, user_id, payload: CompanyUserUpdateRequest, company_id=None) -> CompanyUserResponse:
+        user = await self.repo.get_by_id(user_id, company_id)
         if not user:
             raise BusinessException(message="Company user not found", status_code=404)
+
+        # Prevent moving a user to a different company from the caller's tenant
+        if payload.company_id is not None and company_id is not None and payload.company_id != company_id:
+            raise BusinessException(message="Cannot reassign user to a different company", status_code=403)
 
         target_company_id = payload.company_id if payload.company_id is not None else user.company_id
         if payload.company_id is not None:
             company = await self.company_repo.get_by_id(target_company_id)
             if not company:
                 raise BusinessException(message="Company not found", status_code=404)
+
+        target_role_id = payload.role_id if payload.role_id is not None else user.role_id
+        target_department_id = (
+            payload.department_id if payload.department_id is not None else user.department_id
+        )
+
+        if payload.role_id is not None or payload.department_id is not None:
+            await self._validate_role_and_department(
+                role_id=target_role_id,
+                department_id=target_department_id,
+                company_id=target_company_id,
+            )
 
         target_email = payload.email if payload.email is not None else user.email
         target_emp_id = payload.emp_id if payload.emp_id is not None else user.emp_id
@@ -241,18 +360,24 @@ class UserService:
 
         if payload.email is not None:
             user.email = payload.email
-
         if payload.company_id is not None:
             user.company_id = payload.company_id
-
         if payload.emp_id is not None:
             user.emp_id = payload.emp_id
         if payload.full_name is not None:
             user.full_name = payload.full_name
         if payload.department is not None:
             user.department = payload.department
-        if payload.location is not None:
-            user.location = payload.location
+        if payload.department_id is not None:
+            user.department_id = payload.department_id
+            # Keep the legacy `department` label in sync with the FK lookup.
+            dept = await self.dept_repo.get_by_id(
+                payload.department_id, company_id=target_company_id
+            )
+            if dept is not None:
+                user.department = dept.name
+        if payload.role_id is not None:
+            user.role_id = payload.role_id
         if payload.gender is not None:
             user.gender = payload.gender
         if payload.phone is not None:
@@ -268,17 +393,27 @@ class UserService:
             await self.db.rollback()
             self._raise_duplicate_business_exception(e)
 
-        return CompanyUserResponse.model_validate(user)
+        resp = CompanyUserResponse.model_validate(user)
+        if user.role_id is not None:
+            role = await self.role_repo.get_by_id(user.role_id)
+            if role:
+                resp.role_name = role.name
+        return resp
 
-    async def delete_user(self, user_id) -> CompanyUserResponse:
-        user = await self.repo.get_by_id(user_id)
+    async def delete_user(self, user_id, company_id=None) -> CompanyUserResponse:
+        user = await self.repo.get_by_id(user_id, company_id)
         if not user:
             raise BusinessException(message="Company user not found", status_code=404)
 
         user.is_active = False
         user.is_deleted = True
         user = await self.repo.update(user)
-        return CompanyUserResponse.model_validate(user)
+        resp = CompanyUserResponse.model_validate(user)
+        if user.role_id is not None:
+            role = await self.role_repo.get_by_id(user.role_id)
+            if role:
+                resp.role_name = role.name
+        return resp
 
     async def _validate_company_user_uniqueness(
         self,
@@ -338,6 +473,7 @@ class UserService:
         username: str,
         email: str,
         company_id,
+        role_id: int | None = None,
         company_name: str | None = None,
     ) -> str | None:
         existing_auth_user = await self.auth_repo.get_by_email(email)
@@ -348,12 +484,23 @@ class UserService:
         if existing_username:
             raise BusinessException(message="Username already exists", status_code=409)
 
+        # Resolve the legacy `users.role` string from the assigned RBAC role.
+        # Stored in the role's exact name form (e.g. "Company Admin"); the
+        # platform-admin detector uppercases before comparing, so platform
+        # roles still resolve correctly via PLATFORM_LEGACY_ROLES.
+        # Defaults to "USER" when no role is assigned (e.g. Excel bulk upload).
+        role_str = "USER"
+        if role_id is not None:
+            role = await self.role_repo.get_by_id(role_id)
+            if role and role.name:
+                role_str = role.name
+
         plain_password = self._generate_secure_password()
         auth_user = User(
             username=username,
             email=email,
             hashed_password=hash_password(plain_password),
-            role="USER",
+            role=role_str,
             is_active=True,
         )
         await self.auth_repo.create(auth_user)

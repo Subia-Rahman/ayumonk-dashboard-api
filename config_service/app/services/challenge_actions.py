@@ -45,12 +45,46 @@ class ChallengeActionService:
             challenge_id=payload.challenge_id,
             completion_date=today,
         )
+
+        is_counter = (challenge.challenge_type or "").lower() == "counter"
+        target = challenge.target_value
+
         if existing:
+            # Counter challenges accumulate toward target_value across multiple
+            # submissions in the same day. Block only once the target is met.
+            if is_counter and target is not None:
+                if (existing.value_logged or 0) >= target:
+                    raise BusinessException(message="Already completed today", status_code=409)
+
+                new_total = (existing.value_logged or 0) + (value_logged or 0)
+                new_xp, status = self._compute_xp_and_status(
+                    challenge_type=challenge.challenge_type,
+                    target=target,
+                    value=new_total,
+                    full_xp=challenge.xp_reward,
+                )
+
+                existing.value_logged = new_total
+                existing.xp_earned = new_xp
+                completion = await self.completion_repo.update(existing)
+
+                return ChallengeActionResponse(
+                    message=(
+                        "Challenge marked as completed"
+                        if status == "done"
+                        else "Progress logged"
+                    ),
+                    xp_earned=completion.xp_earned,
+                    status=status,
+                    completion_date=today,
+                    value_logged=completion.value_logged,
+                )
+
             raise BusinessException(message="Already completed today", status_code=409)
 
         xp_earned, status = self._compute_xp_and_status(
             challenge_type=challenge.challenge_type,
-            target=challenge.target_value,
+            target=target,
             value=value_logged,
             full_xp=challenge.xp_reward,
         )
@@ -67,7 +101,11 @@ class ChallengeActionService:
         )
 
         return ChallengeActionResponse(
-            message="Challenge marked as completed",
+            message=(
+                "Challenge marked as completed"
+                if status == "done"
+                else "Progress logged"
+            ),
             xp_earned=completion.xp_earned,
             status=status,
             completion_date=today,

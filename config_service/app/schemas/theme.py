@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, validator
 
 
 class ThemeCreateRequest(BaseModel):
+    company_id: UUID
     theme_display_name: str = Field(..., min_length=1, max_length=255)
     description: str | None = None
     duration_days: int | None = None
@@ -32,6 +33,7 @@ class ThemeUpdateRequest(BaseModel):
 
 class ThemeResponse(BaseModel):
     theme_key: UUID
+    company_id: UUID | None = None
     theme_display_name: str
     description: str | None = None
     duration_days: int | None = None

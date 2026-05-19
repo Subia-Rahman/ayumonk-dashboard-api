@@ -42,11 +42,13 @@ class UserRepository:
         res = await self.db.execute(q)
         return res.scalars().first()
 
-    async def get_by_id(self, user_id) -> Optional[CompanyUser]:
+    async def get_by_id(self, user_id, company_id=None) -> Optional[CompanyUser]:
         q = select(CompanyUser).where(
             CompanyUser.id == user_id,
             CompanyUser.is_deleted == False,
         )
+        if company_id is not None:
+            q = q.where(CompanyUser.company_id == company_id)
         res = await self.db.execute(q)
         return res.scalars().first()
 
@@ -62,6 +64,9 @@ class UserRepository:
         skip: int,
         limit: int,
         company_id=None,
+        department_id=None,
+        restrict_to_id=None,
+        role_id: int | None = None,
         search: str | None = None,
         is_active: bool | None = True,
     ):
@@ -70,6 +75,12 @@ class UserRepository:
             q = q.where(CompanyUser.is_active == is_active)
         if company_id:
             q = q.where(CompanyUser.company_id == company_id)
+        if department_id is not None:
+            q = q.where(CompanyUser.department_id == department_id)
+        if restrict_to_id is not None:
+            q = q.where(CompanyUser.id == restrict_to_id)
+        if role_id is not None:
+            q = q.where(CompanyUser.role_id == role_id)
         if search:
             like = f"%{search.lower()}%"
             q = q.where(

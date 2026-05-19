@@ -6,7 +6,8 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from config_service.app.services.companies import CompanyService
 from config_service.app.core.db import get_db
-from authentication_service.app.core.dependencies import require_roles
+from authentication_service.app.core.dependencies import get_current_user
+from authentication_service.app.core.rbac import require_permission
 from config_service.app.repositories.company_users import UserRepository
 from config_service.app.schemas.companies import (
     CompanyAdminCreateRequest,
@@ -32,24 +33,40 @@ async def list_companies(
     skip: int = Query(0, ge=0),
     limit: int = Query(100, ge=1, le=500),
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(require_roles("SUPER-ADMIN","ADMIN")),
+    current_user = Depends(require_permission("company_master:read")),
 ):
+    is_platform = getattr(current_user, "is_platform_admin", False)
     logger.info(
-        "REQUEST | list_companies | user_id=%s | skip=%s | limit=%s",
+        "REQUEST | list_companies | user_id=%s | skip=%s | limit=%s | is_platform_admin=%s",
         current_user.user_id,
         skip,
-        limit
+        limit,
+        is_platform,
     )
 
     try:
         db.info["user_id"] = current_user.user_id
         svc = CompanyService(db)
-        result = await svc.list_companies(skip=skip, limit=limit)
+
+        if is_platform:
+            result = await svc.list_companies(skip=skip, limit=limit)
+        else:
+            tenant_id = getattr(current_user, "tenant_id", None)
+            if tenant_id is None:
+                return error_response(
+                    message="No tenant context for current user",
+                    status_code=403,
+                )
+            try:
+                company = await svc.get_company(tenant_id)
+                result = [company]
+            except BusinessException:
+                result = []
 
         logger.info(
             "RESPONSE | list_companies | user_id=%s | count=%s",
             current_user.user_id,
-            len(result)
+            len(result),
         )
 
         return success_response(
@@ -71,7 +88,7 @@ async def list_companies(
 @router.get("/me", response_model=APIResponse[CompanyResponse])
 async def get_my_company(
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("ADMIN", "USER", "SUPER-ADMIN")),
+    current_user=Depends(get_current_user),
 ):
     logger.info(
         "REQUEST | get_my_company | user_id=%s",
@@ -100,7 +117,7 @@ async def get_my_company(
 async def upload_companies(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(require_roles("SUPER-ADMIN")),
+    current_user = Depends(require_permission("company_master:create")),
 ):
     logger.info(
         "REQUEST | upload_companies_excel | user_id=%s | filename=%s",
@@ -141,7 +158,7 @@ async def upload_companies(
 async def create_company_with_admin(
     payload: CompanyCreateWithAdminRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("company_master:create")),
 ):
     logger.info(
         "REQUEST | create_company_with_admin | user_id=%s | company=%s",
@@ -169,7 +186,7 @@ async def create_company_with_admin(
 async def get_company(
     company_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("company_master:read")),
 ):
     logger.info(
         "REQUEST | get_company | user_id=%s | company_id=%s",
@@ -195,7 +212,7 @@ async def update_company(
     company_id: UUID,
     payload: CompanyUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("company_master:update")),
 ):
     logger.info(
         "REQUEST | update_company | user_id=%s | company_id=%s",
@@ -227,7 +244,7 @@ async def update_company(
 async def delete_company(
     company_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("company_master:delete")),
 ):
     logger.info(
         "REQUEST | delete_company | user_id=%s | company_id=%s",
@@ -253,7 +270,7 @@ async def assign_company_admin(
     company_id: UUID,
     payload: CompanyAdminCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("company_users:create")),
 ):
     logger.info(
         "REQUEST | assign_company_admin | user_id=%s | company_id=%s",

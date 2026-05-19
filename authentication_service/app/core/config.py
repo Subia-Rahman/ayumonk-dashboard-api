@@ -30,7 +30,8 @@ class Settings(BaseSettings):
     EMAIL_SERVICE_URL: Optional[str] = Field(default=None, env="EMAIL_SERVICE_URL")
     FRONTEND_BASE_URL: Optional[str] = Field(default=None, env="FRONTEND_BASE_URL")
     AUTH_TOKEN_URL: str = Field(default="/authentication/api/v1/auth/token", env="AUTH_TOKEN_URL")
-
+    VAPID_PRIVATE_KEY:Optional[str] = Field(default=None, env="VAPID_PRIVATE_KEY")
+    VAPID_EMAIL:Optional[str] = Field(default=None, env="VAPID_EMAIL")
     class Config:
         env_file=ROOT_DIR / ".env",
         env_file_encoding = "utf-8"

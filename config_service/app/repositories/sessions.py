@@ -24,14 +24,11 @@ class SessionRepository:
         await self.db.refresh(session)
         return session
 
-    async def list_sessions(self, skip: int = 0, limit: int = 100) -> list[Session]:
-        stmt = (
-            select(Session)
-            .where(Session.is_deleted == False)
-            .order_by(Session.created_at.desc())
-            .offset(skip)
-            .limit(limit)
-        )
+    async def list_sessions(self, skip: int = 0, limit: int = 100, company_id=None) -> list[Session]:
+        stmt = select(Session).where(Session.is_deleted == False)
+        if company_id is not None:
+            stmt = stmt.where(Session.company_id == company_id)
+        stmt = stmt.order_by(Session.created_at.desc()).offset(skip).limit(limit)
         res = await self.db.execute(stmt)
         return list(res.scalars().all())
 
@@ -82,11 +79,13 @@ class SessionRepository:
         res = await self.db.execute(stmt)
         return list(res.scalars().all()), total
 
-    async def get_session(self, session_id: UUID) -> Session | None:
+    async def get_session(self, session_id: UUID, company_id=None) -> Session | None:
         stmt = select(Session).where(
             Session.id == session_id,
             Session.is_deleted == False,
         )
+        if company_id is not None:
+            stmt = stmt.where(Session.company_id == company_id)
         res = await self.db.execute(stmt)
         return res.scalar_one_or_none()
 

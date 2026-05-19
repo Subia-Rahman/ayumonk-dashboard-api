@@ -11,6 +11,7 @@ class KPIScoringOptionRequest(BaseModel):
 
 
 class KPIQuestionCreateRequest(BaseModel):
+    company_id: UUID
     theme_key: UUID
     kpi_key: UUID
     question_code: str = Field(..., min_length=1, max_length=50)
@@ -54,6 +55,7 @@ class KPIScoringOptionResponse(BaseModel):
 
 class KPIQuestionResponse(BaseModel):
     id: UUID
+    company_id: UUID | None = None
     theme_key: UUID
     kpi_key: UUID
     question_code: str

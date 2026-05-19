@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Boolean, Column, Integer, SmallInteger, String, Text
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 
 from config_service.app.core.audit.mixin import AuditMixin
@@ -11,6 +11,7 @@ class Challenge(Base, AuditMixin):
     __tablename__ = "challenges"
 
     challenge_key = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(UUID(as_uuid=True), ForeignKey("companies.id"), nullable=True)
     name = Column(String, nullable=False)
     description = Column(Text, nullable=True)
     challenge_type = Column(String(20), nullable=False)

@@ -20,7 +20,11 @@ class Settings(BaseSettings):
     SMTP_USE_SSL: bool = False
     FROM_EMAIL: str | None = None
     EMAIL_CONFIG_CACHE_SECONDS: int = 60
-    EMAIL_SEND_MAX_RETRIES: int = 3
-    EMAIL_SEND_RETRY_DELAY_SECONDS: float = 1.5
+    EMAIL_SEND_MAX_RETRIES: int = 2
+    EMAIL_SEND_RETRY_DELAY_SECONDS: float = 1.0
+    # Per-attempt SMTP socket timeout. Was hardcoded at 20s before, which
+    # combined with retries meant up to 60s of blocking per email. 10s is
+    # more than enough for a reachable SMTP relay.
+    SMTP_TIMEOUT_SECONDS: float = 10.0
 
 settings = Settings()

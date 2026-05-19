@@ -109,13 +109,17 @@ class KPISuggestionMappingUpdateRequest(BaseModel):
 class KPISuggestionMappingResponse(BaseModel):
     id: UUID
     kpi_key: UUID
+    kpi_name: Optional[str] = None
     trigger_mode: str
     risk_level: Optional[str]
     question_key: Optional[UUID]
+    question_code: Optional[str] = None
+    question_text: Optional[str] = None
     score_threshold_below: Optional[int]
     score_threshold_above: Optional[int]
     kpi_score_below: Optional[int]
     suggestion_id: UUID
+    suggestion_title: Optional[str] = None
     priority: int
     is_active: bool
     created_at: datetime

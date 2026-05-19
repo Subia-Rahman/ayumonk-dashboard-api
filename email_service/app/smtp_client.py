@@ -1,3 +1,4 @@
+import logging
 import os
 from pathlib import Path
 import smtplib
@@ -8,6 +9,9 @@ from typing import Optional
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email_service.app.config import settings
+
+
+logger = logging.getLogger("email_service.smtp_client")
 
 
 @dataclass
@@ -79,10 +83,12 @@ def _get_active_config() -> EmailConfig:
 
 
 def send_email(to, subject, body, html=False):
-    print('BEFORE GET EMAIL')
+    """Send an email via SMTP. Synchronous and blocking — callers in async
+    contexts must offload via ``asyncio.to_thread`` to avoid blocking the
+    event loop.
+    """
     cfg = _get_active_config()
-    print('AFTER GET EMAIL')
-    print(cfg)
+
     msg = MIMEMultipart()
     msg["From"] = cfg.from_email
     msg["To"] = ", ".join(to)
@@ -91,26 +97,38 @@ def send_email(to, subject, body, html=False):
     mime_type = "html" if html else "plain"
     msg.attach(MIMEText(body, mime_type))
 
+    smtp_timeout = float(getattr(settings, "SMTP_TIMEOUT_SECONDS", 10))
+
     last_exc: Optional[Exception] = None
     for attempt in range(1, settings.EMAIL_SEND_MAX_RETRIES + 1):
+        server: Optional[smtplib.SMTP] = None
         try:
             if cfg.use_ssl:
-                server = smtplib.SMTP_SSL(cfg.host, cfg.port, timeout=20)
+                server = smtplib.SMTP_SSL(cfg.host, cfg.port, timeout=smtp_timeout)
             else:
-                server = smtplib.SMTP(cfg.host, cfg.port, timeout=20)
+                server = smtplib.SMTP(cfg.host, cfg.port, timeout=smtp_timeout)
             if cfg.use_tls and not cfg.use_ssl:
                 server.starttls()
             server.login(cfg.username, cfg.password)
             server.sendmail(cfg.from_email, to, msg.as_string())
-            server.quit()
+            logger.info(
+                "Email sent | to=%s | subject=%s | attempt=%s",
+                to, subject, attempt,
+            )
             return
         except Exception as exc:
             last_exc = exc
-            try:
-                server.quit()
-            except Exception:
-                pass
+            logger.warning(
+                "SMTP send failed | attempt=%s | to=%s | error=%s",
+                attempt, to, exc,
+            )
             if attempt < settings.EMAIL_SEND_MAX_RETRIES:
                 time.sleep(settings.EMAIL_SEND_RETRY_DELAY_SECONDS)
+        finally:
+            if server is not None:
+                try:
+                    server.quit()
+                except Exception:
+                    pass
 
     raise RuntimeError(f"Email send failed after retries: {last_exc}") from last_exc

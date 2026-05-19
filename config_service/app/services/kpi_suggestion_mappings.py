@@ -45,7 +45,7 @@ class KPISuggestionMappingService:
                 is_active=payload.is_active,
             )
         )
-        return KPISuggestionMappingResponse.model_validate(mapping)
+        return await self._to_response(mapping)
 
     async def list(
         self,
@@ -65,8 +65,32 @@ class KPISuggestionMappingService:
             trigger_mode=trigger_mode,
             is_active=is_active,
         )
+
+        kpi_ids = list({m.kpi_key for m in items if m.kpi_key})
+        question_ids = list({m.question_key for m in items if m.question_key})
+        suggestion_ids = list({m.suggestion_id for m in items if m.suggestion_id})
+
+        kpis = await self.kpi_repo.list_by_ids(kpi_ids) if kpi_ids else []
+        questions = (
+            await self.question_repo.list_by_ids(question_ids) if question_ids else []
+        )
+        suggestions = (
+            await self.suggestion_repo.list_by_ids(suggestion_ids) if suggestion_ids else []
+        )
+        kpi_map = {k.kpi_key: k for k in kpis}
+        question_map = {q.id: q for q in questions}
+        suggestion_map = {s.id: s for s in suggestions}
+
         return KPISuggestionMappingListResponse(
-            items=[KPISuggestionMappingResponse.model_validate(item) for item in items],
+            items=[
+                self._build_response(
+                    item,
+                    kpi=kpi_map.get(item.kpi_key),
+                    question=question_map.get(item.question_key),
+                    suggestion=suggestion_map.get(item.suggestion_id),
+                )
+                for item in items
+            ],
             total=total,
             skip=skip,
             limit=limit,
@@ -76,7 +100,7 @@ class KPISuggestionMappingService:
         mapping = await self.mapping_repo.get_by_id(mapping_id)
         if not mapping:
             raise BusinessException(message="KPI suggestion mapping not found", status_code=404)
-        return KPISuggestionMappingResponse.model_validate(mapping)
+        return await self._to_response(mapping)
 
     async def update(
         self,
@@ -134,7 +158,7 @@ class KPISuggestionMappingService:
             mapping.is_active = payload.is_active
 
         mapping = await self.mapping_repo.update(mapping)
-        return KPISuggestionMappingResponse.model_validate(mapping)
+        return await self._to_response(mapping)
 
     async def delete(self, mapping_id) -> KPISuggestionMappingResponse:
         mapping = await self.mapping_repo.get_by_id(mapping_id)
@@ -144,7 +168,51 @@ class KPISuggestionMappingService:
         mapping.is_active = False
         mapping.is_deleted = True
         mapping = await self.mapping_repo.update(mapping)
-        return KPISuggestionMappingResponse.model_validate(mapping)
+        return await self._to_response(mapping)
+
+    async def _to_response(self, mapping: KPISuggestionMapping) -> KPISuggestionMappingResponse:
+        kpi = await self.kpi_repo.get_by_id(mapping.kpi_key) if mapping.kpi_key else None
+        question = (
+            await self.question_repo.get_by_id(mapping.question_key)
+            if mapping.question_key
+            else None
+        )
+        suggestion = (
+            await self.suggestion_repo.get_by_id(mapping.suggestion_id)
+            if mapping.suggestion_id
+            else None
+        )
+        return self._build_response(
+            mapping, kpi=kpi, question=question, suggestion=suggestion
+        )
+
+    @staticmethod
+    def _build_response(
+        mapping: KPISuggestionMapping,
+        *,
+        kpi: KPI | None = None,
+        question: KPIQuestion | None = None,
+        suggestion: Suggestion | None = None,
+    ) -> KPISuggestionMappingResponse:
+        return KPISuggestionMappingResponse(
+            id=mapping.id,
+            kpi_key=mapping.kpi_key,
+            kpi_name=kpi.display_name if kpi else None,
+            trigger_mode=mapping.trigger_mode,
+            risk_level=mapping.risk_level,
+            question_key=mapping.question_key,
+            question_code=question.question_code if question else None,
+            question_text=question.question_text if question else None,
+            score_threshold_below=mapping.score_threshold_below,
+            score_threshold_above=mapping.score_threshold_above,
+            kpi_score_below=mapping.kpi_score_below,
+            suggestion_id=mapping.suggestion_id,
+            suggestion_title=suggestion.title if suggestion else None,
+            priority=mapping.priority,
+            is_active=bool(mapping.is_active),
+            created_at=mapping.created_at,
+            updated_at=mapping.updated_at,
+        )
 
     async def _validate_fk(
         self,

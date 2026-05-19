@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, EmailStr, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 ALLOWED_AGE_BANDS = {"20-25", "26-30", "31-35", "36-40", "41-50", "50+"}
 
@@ -10,11 +10,12 @@ class CompanyUserCreateRequest(BaseModel):
     emp_id: str | None = None
     full_name: str | None = None
     department: str | None = None
-    location: str | None = None
+    department_id: UUID | None = None
     gender: str | None = None
     phone: str | None = None
     email: EmailStr
     company_id: UUID
+    role_id: int = Field(..., description="FK to roles.id; the RBAC role assigned to the user")
     age_band: str | None = None
 
     @field_validator("age_band")
@@ -35,11 +36,12 @@ class CompanyUserUpdateRequest(BaseModel):
     emp_id: str | None = None
     full_name: str | None = None
     department: str | None = None
-    location: str | None = None
+    department_id: UUID | None = None
     gender: str | None = None
     phone: str | None = None
     email: EmailStr | None = None
     company_id: UUID | None = None
+    role_id: int | None = None
     is_active: bool | None = None
     age_band: str | None = None
 
@@ -62,11 +64,13 @@ class CompanyUserResponse(BaseModel):
     emp_id: str | None = None
     full_name: str | None = None
     department: str | None = None
-    location: str | None = None
+    department_id: UUID | None = None
     gender: str | None = None
     phone: str | None = None
     email: EmailStr
     company_id: UUID
+    role_id: int | None = None
+    role_name: str | None = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -74,7 +78,7 @@ class CompanyUserResponse(BaseModel):
     password: str | None = None
     age_band: str | None = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CompanyUserListResponse(BaseModel):

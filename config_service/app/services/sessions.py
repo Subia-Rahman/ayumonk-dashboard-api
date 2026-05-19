@@ -50,6 +50,8 @@ class SessionService:
         self.logger = logging.getLogger(__name__)
 
     async def create_session(self, payload: SessionCreateRequest) -> SessionSummaryResponse:
+        if not payload.company_id:
+            raise BusinessException(message="company_id is required", status_code=422)
         session = await self.session_repo.create_session(
             Session(
                 title=payload.title.strip(),
@@ -59,8 +61,8 @@ class SessionService:
         )
         return self._to_summary(session)
 
-    async def list_sessions(self, skip: int = 0, limit: int = 100) -> list[SessionSummaryResponse]:
-        sessions = await self.session_repo.list_sessions(skip=skip, limit=limit)
+    async def list_sessions(self, skip: int = 0, limit: int = 100, company_id=None) -> list[SessionSummaryResponse]:
+        sessions = await self.session_repo.list_sessions(skip=skip, limit=limit, company_id=company_id)
         return [self._to_summary(session) for session in sessions]
 
     async def add_questions(self, session_id: UUID, payload: SessionQuestionAddRequest) -> list[SessionQuestionResponse]:
@@ -177,16 +179,16 @@ class SessionService:
         await self.session_repo.set_question_orders(session_id, order_map)
         return await self._build_ordered_questions(session_id)
 
-    async def update_session_status(self, session_id: UUID, is_active: bool) -> SessionSummaryResponse:
-        session = await self.session_repo.get_session(session_id)
+    async def update_session_status(self, session_id: UUID, is_active: bool, company_id=None) -> SessionSummaryResponse:
+        session = await self.session_repo.get_session(session_id, company_id)
         if not session:
             raise BusinessException(message="Session not found", status_code=404)
 
         updated = await self.session_repo.update_session_status(session, is_active)
         return self._to_summary(updated)
 
-    async def update_session_details(self, session_id: UUID, payload: SessionUpdateRequest) -> SessionSummaryResponse:
-        session = await self.session_repo.get_session(session_id)
+    async def update_session_details(self, session_id: UUID, payload: SessionUpdateRequest, company_id=None) -> SessionSummaryResponse:
+        session = await self.session_repo.get_session(session_id, company_id)
         if not session:
             raise BusinessException(message="Session not found", status_code=404)
 
@@ -199,8 +201,8 @@ class SessionService:
         )
         return self._to_summary(updated)
 
-    async def delete_session(self, session_id: UUID) -> SessionSummaryResponse:
-        session = await self.session_repo.get_session(session_id)
+    async def delete_session(self, session_id: UUID, company_id=None) -> SessionSummaryResponse:
+        session = await self.session_repo.get_session(session_id, company_id)
         if not session:
             raise BusinessException(message="Session not found", status_code=404)
 

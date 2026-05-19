@@ -9,5 +9,8 @@ from .kpi_questions import KPIQuestion
 from .kpi_scoring import KPIScoring
 from .session import Session
 from .session_question import SessionQuestion
+from .notification import Notification
+from .push_subscription import PushSubscription
+from .reminder_settings import ReminderSettings
 from .theme import Theme
 from .user_challenge_completion import UserChallengeCompletion

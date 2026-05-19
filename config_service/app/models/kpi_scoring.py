@@ -10,6 +10,12 @@ class KPIScoring(Base, AuditMixin):
     __tablename__ = "kpi_scoring"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id"),
+        nullable=True,
+        index=True,
+    )
     question_id = Column(UUID(as_uuid=True), ForeignKey("kpi_questions.id"))
     option_number = Column(Integer)  # 1..5
     score = Column(Integer)

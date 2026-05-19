@@ -15,6 +15,12 @@ class UserChallengeCompletionRepository:
         await self.db.refresh(obj)
         return obj
 
+    async def update(self, obj: UserChallengeCompletion) -> UserChallengeCompletion:
+        self.db.add(obj)
+        await self.db.commit()
+        await self.db.refresh(obj)
+        return obj
+
     async def get_by_user_challenge_date(self, user_id, challenge_id, completion_date: date):
         stmt = select(UserChallengeCompletion).where(
             UserChallengeCompletion.user_id == user_id,

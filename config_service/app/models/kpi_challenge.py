@@ -11,6 +11,12 @@ class KPIChallenge(Base, AuditMixin):
     __tablename__ = "kpi_challenges"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    company_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("companies.id"),
+        nullable=True,
+        index=True,
+    )
     kpi_key = Column(UUID(as_uuid=True), ForeignKey("kpis.kpi_key"), nullable=False)
     challenge_key = Column(UUID(as_uuid=True), ForeignKey("challenges.challenge_key"), nullable=False)
     start_date = Column(Date, nullable=False)

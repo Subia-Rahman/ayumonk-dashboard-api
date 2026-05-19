@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     EMAIL_SEND_ON_PUBLISH: bool = Field(default=True, env="EMAIL_SEND_ON_PUBLISH")
     EMAIL_SEND_BATCH_SIZE: int = Field(default=50, env="EMAIL_SEND_BATCH_SIZE")
     EMAIL_SEND_TIMEOUT_SECONDS: float = Field(default=10.0, env="EMAIL_SEND_TIMEOUT_SECONDS")
+    # When False (default) the EmailClient calls email_service's smtp_client
+    # directly via asyncio.to_thread, skipping a same-process HTTP loopback.
+    # Flip to True only when email_service runs as a separate deployable.
+    EMAIL_USE_HTTP_TRANSPORT: bool = Field(default=False, env="EMAIL_USE_HTTP_TRANSPORT")
+    # Concurrency cap for the per-minute reminder dispatcher. Each in-flight
+    # task holds one DB session, so this is bounded by the DB pool size below.
+    REMINDER_DISPATCH_CONCURRENCY: int = Field(default=8, env="REMINDER_DISPATCH_CONCURRENCY")
+    # SQLAlchemy async pool tuning. Defaults are larger than SQLAlchemy's
+    # built-ins so the dispatcher's concurrent fan-out doesn't starve API
+    # requests of connections.
+    DB_POOL_SIZE: int = Field(default=20, env="DB_POOL_SIZE")
+    DB_MAX_OVERFLOW: int = Field(default=20, env="DB_MAX_OVERFLOW")
+    DB_POOL_RECYCLE_SECONDS: int = Field(default=1800, env="DB_POOL_RECYCLE_SECONDS")
     EMAIL_PUBLISH_SUBJECT_TEMPLATE: str = Field(
         default="New Session Form: {session_title}",
         env="EMAIL_PUBLISH_SUBJECT_TEMPLATE",
@@ -73,6 +86,8 @@ class Settings(BaseSettings):
     FRONTEND_BASE_URL: Optional[str] = Field(default=None, env="FRONTEND_BASE_URL")
     AUTH_TOKEN_URL: str = Field(default="/authentication/api/v1/auth/login", env="AUTH_TOKEN_URL")
     DEBUG_ERRORS: bool = Field(default=False, env="DEBUG_ERRORS")
+    VAPID_PRIVATE_KEY:Optional[str] = Field(default=None, env="VAPID_PRIVATE_KEY")
+    VAPID_EMAIL:Optional[str] = Field(default=None, env="VAPID_EMAIL")
 
     class Config:
         env_file=ROOT_DIR / ".env",

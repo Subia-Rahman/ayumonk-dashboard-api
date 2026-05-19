@@ -20,15 +20,19 @@ class KPIQuestionAdminService:
         self.kpi_repo = kpi_repo
 
     async def create(self, payload: KPIQuestionCreateRequest) -> KPIQuestionResponse:
-        await self._validate_refs(payload.theme_key, payload.kpi_key)
+        if not payload.company_id:
+            raise BusinessException(message="company_id is required", status_code=400)
 
-        existing = await self.question_repo.get_by_code(payload.question_code)
+        await self._validate_refs(payload.theme_key, payload.kpi_key, payload.company_id)
+
+        existing = await self.question_repo.get_by_code(payload.question_code, payload.company_id)
         if existing:
             raise BusinessException(message="Question code already exists", status_code=409)
 
         try:
             question = await self.question_repo.create(
                 KPIQuestion(
+                    company_id=payload.company_id,
                     theme=payload.theme_key,
                     kpi=payload.kpi_key,
                     question_code=payload.question_code,
@@ -43,6 +47,7 @@ class KPIQuestionAdminService:
         for option in payload.options:
             await self.scoring_repo.create(
                 KPIScoring(
+                    company_id=question.company_id,
                     question_id=question.id,
                     option_number=option.option_number,
                     option_text=option.option_text,
@@ -57,6 +62,7 @@ class KPIQuestionAdminService:
         *,
         skip: int,
         limit: int,
+        company_id=None,
         kpi_key=None,
         theme_key=None,
         search: str | None,
@@ -65,6 +71,7 @@ class KPIQuestionAdminService:
         items, total = await self.question_repo.list(
             skip=skip,
             limit=limit,
+            company_id=company_id,
             kpi_key=kpi_key,
             theme_key=theme_key,
             search=search,
@@ -117,6 +124,7 @@ class KPIQuestionAdminService:
             for option in payload.options:
                 await self.scoring_repo.create(
                     KPIScoring(
+                        company_id=question.company_id,
                         question_id=question.id,
                         option_number=option.option_number,
                         option_text=option.option_text,
@@ -155,6 +163,7 @@ class KPIQuestionAdminService:
         ]
         return KPIQuestionResponse(
             id=question.id,
+            company_id=question.company_id,
             theme_key=question.theme,
             kpi_key=question.kpi,
             question_code=question.question_code,
@@ -164,10 +173,10 @@ class KPIQuestionAdminService:
             options=option_responses,
         )
 
-    async def _validate_refs(self, theme_key, kpi_key) -> None:
-        theme = await self.theme_repo.get_by_id(theme_key)
+    async def _validate_refs(self, theme_key, kpi_key, company_id=None) -> None:
+        theme = await self.theme_repo.get_by_id(theme_key, company_id)
         if not theme:
             raise BusinessException(message="Theme not found", status_code=404)
-        kpi = await self.kpi_repo.get_by_id(kpi_key)
+        kpi = await self.kpi_repo.get_by_id(kpi_key, company_id)
         if not kpi:
             raise BusinessException(message="KPI not found", status_code=404)

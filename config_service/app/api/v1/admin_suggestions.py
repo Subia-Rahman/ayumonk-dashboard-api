@@ -4,7 +4,8 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from authentication_service.app.core.dependencies import require_roles
+from authentication_service.app.core.dependencies import get_current_user
+from authentication_service.app.core.rbac import require_permission
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.db import get_db
@@ -28,7 +29,7 @@ router = APIRouter(prefix="/admin/suggestions", tags=["admin-suggestions"])
 async def create_suggestion(
     payload: SuggestionCreateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:create")),
 ):
     logger.info("REQUEST | create_suggestion | user_id=%s", current_user.user_id)
     db.info["user_id"] = current_user.user_id
@@ -53,7 +54,7 @@ async def list_suggestions(
     suggestion_type: str | None = None,
     is_active: bool | None = True,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:read")),
 ):
     logger.info(
         "REQUEST | list_suggestions | user_id=%s | skip=%s | limit=%s | type=%s | active=%s",
@@ -84,7 +85,7 @@ async def list_suggestions(
 async def get_suggestion(
     suggestion_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:read")),
 ):
     logger.info(
         "REQUEST | get_suggestion | user_id=%s | suggestion_id=%s",
@@ -110,7 +111,7 @@ async def update_suggestion(
     suggestion_id: UUID,
     payload: SuggestionUpdateRequest,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:update")),
 ):
     logger.info(
         "REQUEST | update_suggestion | user_id=%s | suggestion_id=%s",
@@ -138,7 +139,7 @@ async def update_suggestion(
 async def delete_suggestion(
     suggestion_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user=Depends(require_roles("SUPER-ADMIN")),
+    current_user=Depends(require_permission("suggestion:delete")),
 ):
     logger.info(
         "REQUEST | delete_suggestion | user_id=%s | suggestion_id=%s",

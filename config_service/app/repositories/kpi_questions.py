@@ -5,17 +5,22 @@ from config_service.app.models.kpi_scoring import KPIScoring
 from config_service.app.models.kpi import KPI
 from config_service.app.models.theme import Theme
 
+
 class KPIQuestionRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def get_by_code(self, code: str) -> KPIQuestion | None:
+    async def get_by_code(self, code: str, company_id=None) -> KPIQuestion | None:
         stmt = select(KPIQuestion).where(KPIQuestion.question_code == code)
+        if company_id is not None:
+            stmt = stmt.where(KPIQuestion.company_id == company_id)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_by_question(self, question_text: str) -> KPIQuestion | None:
+    async def get_by_question(self, question_text: str, company_id=None) -> KPIQuestion | None:
         stmt = select(KPIQuestion).where(KPIQuestion.question_text == question_text)
+        if company_id is not None:
+            stmt = stmt.where(KPIQuestion.company_id == company_id)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
@@ -26,21 +31,34 @@ class KPIQuestionRepository:
         return obj
 
     async def save(self, obj: KPIQuestion) -> KPIQuestion:
-        """Save or update a KPIQuestion object"""
         self.db.add(obj)
         await self.db.commit()
         await self.db.refresh(obj)
         return obj
 
-    async def get_by_id(self, question_id):
+    async def get_by_id(self, question_id, company_id=None):
         stmt = select(KPIQuestion).where(
             KPIQuestion.id == question_id,
             KPIQuestion.is_deleted == False,
         )
+        if company_id is not None:
+            stmt = stmt.where(KPIQuestion.company_id == company_id)
         result = await self.db.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def get_hierarchy_rows(self):
+    async def list_by_ids(self, question_ids: list, company_id=None):
+        if not question_ids:
+            return []
+        stmt = select(KPIQuestion).where(
+            KPIQuestion.id.in_(question_ids),
+            KPIQuestion.is_deleted == False,
+        )
+        if company_id is not None:
+            stmt = stmt.where(KPIQuestion.company_id == company_id)
+        res = await self.db.execute(stmt)
+        return list(res.scalars().all())
+
+    async def get_hierarchy_rows(self, company_id=None):
         stmt = (
             select(
                 Theme.theme_key,
@@ -64,12 +82,14 @@ class KPIQuestionRepository:
                 or_(KPIQuestion.is_deleted == False, KPIQuestion.id.is_(None)),
                 or_(KPIScoring.is_deleted == False, KPIScoring.id.is_(None)),
             )
-            .order_by(
-                Theme.theme_display_name.asc(),
-                KPI.display_name.asc(),
-                KPIQuestion.question_text.asc(),
-                KPIScoring.option_number.asc(),
-            )
+        )
+        if company_id is not None:
+            stmt = stmt.where(Theme.company_id == company_id)
+        stmt = stmt.order_by(
+            Theme.theme_display_name.asc(),
+            KPI.display_name.asc(),
+            KPIQuestion.question_text.asc(),
+            KPIScoring.option_number.asc(),
         )
         res = await self.db.execute(stmt)
         return res.all()
@@ -79,12 +99,15 @@ class KPIQuestionRepository:
         *,
         skip: int,
         limit: int,
+        company_id=None,
         kpi_key=None,
         theme_key=None,
         search: str | None = None,
         is_active: bool | None = True,
     ):
         stmt = select(KPIQuestion).where(KPIQuestion.is_deleted == False)
+        if company_id is not None:
+            stmt = stmt.where(KPIQuestion.company_id == company_id)
         if is_active is not None:
             stmt = stmt.where(KPIQuestion.is_active == is_active)
         if kpi_key:

@@ -5,11 +5,18 @@ from config_service.app.core.config import settings
 from fastapi import Depends
 Base = declarative_base()
 
-# Async engine
+# Async engine with explicit pool sizing. The reminder dispatcher fans out
+# work concurrently, so the default (pool_size=5, max_overflow=10) is too
+# tight under load. pool_pre_ping silently swaps dead connections instead of
+# raising on the next checkout.
 engine = create_async_engine(
-    settings.SQLALCHEMY_DATABASE_URI,  
+    settings.SQLALCHEMY_DATABASE_URI,
     echo=False,
-    future=True
+    future=True,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+    pool_recycle=settings.DB_POOL_RECYCLE_SECONDS,
+    pool_pre_ping=True,
 )
 
 # Async session factory

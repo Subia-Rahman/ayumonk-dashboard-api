@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.kpi import KPI
 from config_service.app.schemas.kpi import (
@@ -13,12 +15,13 @@ class KPIService:
         self.repo = repo
 
     async def create(self, payload: KPICreateRequest) -> KPIResponse:
-        existing = await self.repo.get_by_name(payload.display_name)
+        existing = await self.repo.get_by_name(payload.display_name, payload.company_id)
         if existing:
             raise BusinessException(message="KPI name already exists", status_code=409)
 
         kpi = await self.repo.create(
             KPI(
+                company_id=payload.company_id,
                 display_name=payload.display_name,
                 theme_key=payload.theme_key,
                 start_date=payload.start_date,
@@ -34,6 +37,7 @@ class KPIService:
         *,
         skip: int,
         limit: int,
+        company_id: UUID | None = None,
         theme_key=None,
         search: str | None = None,
         is_active: bool | None = True,
@@ -41,6 +45,7 @@ class KPIService:
         items, total = await self.repo.list(
             skip=skip,
             limit=limit,
+            company_id=company_id,
             theme_key=theme_key,
             search=search,
             is_active=is_active,
@@ -52,26 +57,25 @@ class KPIService:
             limit=limit,
         )
 
-    async def get(self, kpi_key) -> KPIResponse:
-        kpi = await self.repo.get_by_id(kpi_key)
+    async def get(self, kpi_key, company_id: UUID | None = None) -> KPIResponse:
+        kpi = await self.repo.get_by_id(kpi_key, company_id)
         if not kpi:
             raise BusinessException(message="KPI not found", status_code=404)
         return self._to_response(kpi)
 
-    async def update(self, kpi_key, payload: KPIUpdateRequest) -> KPIResponse:
-        kpi = await self.repo.get_by_id(kpi_key)
+    async def update(self, kpi_key, payload: KPIUpdateRequest, company_id: UUID | None = None) -> KPIResponse:
+        kpi = await self.repo.get_by_id(kpi_key, company_id)
         if not kpi:
             raise BusinessException(message="KPI not found", status_code=404)
 
         if payload.display_name and payload.display_name != kpi.display_name:
-            existing = await self.repo.get_by_name(payload.display_name)
+            existing = await self.repo.get_by_name(payload.display_name, kpi.company_id)
             if existing and existing.kpi_key != kpi.kpi_key:
                 raise BusinessException(message="KPI name already exists", status_code=409)
             kpi.display_name = payload.display_name
 
         if payload.theme_key:
             kpi.theme_key = payload.theme_key
-
         if payload.start_date is not None:
             kpi.start_date = payload.start_date
         if payload.end_date is not None:
@@ -80,7 +84,6 @@ class KPIService:
             kpi.domain_category = payload.domain_category
         if payload.wi_weight is not None:
             kpi.wi_weight = payload.wi_weight
-
         if payload.is_active is not None:
             kpi.is_active = payload.is_active
 
@@ -90,12 +93,13 @@ class KPIService:
         kpi = await self.repo.update(kpi)
         return self._to_response(kpi)
 
-    async def delete(self, kpi_key) -> KPIResponse:
-        kpi = await self.repo.get_by_id(kpi_key)
+    async def delete(self, kpi_key, company_id: UUID | None = None) -> KPIResponse:
+        kpi = await self.repo.get_by_id(kpi_key, company_id)
         if not kpi:
             raise BusinessException(message="KPI not found", status_code=404)
 
         kpi.is_active = False
+        kpi.is_deleted = True
         kpi = await self.repo.update(kpi)
         return self._to_response(kpi)
 
@@ -103,6 +107,7 @@ class KPIService:
     def _to_response(kpi: KPI) -> KPIResponse:
         return KPIResponse(
             kpi_key=kpi.kpi_key,
+            company_id=kpi.company_id,
             display_name=kpi.display_name,
             theme_key=kpi.theme_key,
             start_date=kpi.start_date,

@@ -10,7 +10,8 @@ from config_service.app.repositories.employee_form import EmployeeFormRepository
 from config_service.app.repositories.kpi_questions import KPIQuestionRepository
 from config_service.app.repositories.kpi_scoring import KPIScoringRepository
 from config_service.app.core.db import get_db
-from authentication_service.app.core.dependencies import require_roles
+from authentication_service.app.core.dependencies import get_current_user
+from authentication_service.app.core.rbac import require_permission
 
 from config_service.app.services.employee_form import EmployeeFormService
 from config_service.app.schemas.employee_forms import GoogleFormWebhookRequest
@@ -96,7 +97,7 @@ async def employee_forms_webhook(
 async def get_employee_score(
     employee_email: str | None = None,
     db: AsyncSession = Depends(get_db),
-    current_user = Depends(require_roles("ADMIN"))
+    current_user = Depends(require_permission("kpis:read"))
 ):
     logger.info(
         "REQUEST | get_employee_score | user_id=%s | employee_email=%s",

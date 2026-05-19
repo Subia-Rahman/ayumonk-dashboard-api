@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.theme import Theme
 from config_service.app.schemas.theme import (
@@ -13,12 +15,13 @@ class ThemeService:
         self.repo = repo
 
     async def create(self, payload: ThemeCreateRequest) -> ThemeResponse:
-        existing = await self.repo.get_by_name_ci(payload.theme_display_name)
+        existing = await self.repo.get_by_name_ci(payload.theme_display_name, payload.company_id)
         if existing:
             raise BusinessException(message="Theme name already exists", status_code=409)
 
         theme = await self.repo.create(
             Theme(
+                company_id=payload.company_id,
                 theme_display_name=payload.theme_display_name,
                 description=payload.description,
                 duration_days=payload.duration_days,
@@ -32,12 +35,14 @@ class ThemeService:
         *,
         skip: int,
         limit: int,
+        company_id: UUID | None = None,
         search: str | None = None,
         is_active: bool | None = True,
     ) -> ThemeListResponse:
         items, total = await self.repo.list(
             skip=skip,
             limit=limit,
+            company_id=company_id,
             search=search,
             is_active=is_active,
         )
@@ -48,19 +53,19 @@ class ThemeService:
             limit=limit,
         )
 
-    async def get(self, theme_key) -> ThemeResponse:
-        theme = await self.repo.get_by_id(theme_key)
+    async def get(self, theme_key, company_id: UUID | None = None) -> ThemeResponse:
+        theme = await self.repo.get_by_id(theme_key, company_id)
         if not theme:
             raise BusinessException(message="Theme not found", status_code=404)
         return self._to_response(theme)
 
-    async def update(self, theme_key, payload: ThemeUpdateRequest) -> ThemeResponse:
-        theme = await self.repo.get_by_id(theme_key)
+    async def update(self, theme_key, payload: ThemeUpdateRequest, company_id: UUID | None = None) -> ThemeResponse:
+        theme = await self.repo.get_by_id(theme_key, company_id)
         if not theme:
             raise BusinessException(message="Theme not found", status_code=404)
 
         if payload.theme_display_name and payload.theme_display_name != theme.theme_display_name:
-            existing = await self.repo.get_by_name_ci(payload.theme_display_name)
+            existing = await self.repo.get_by_name_ci(payload.theme_display_name, theme.company_id)
             if existing and existing.theme_key != theme.theme_key:
                 raise BusinessException(message="Theme name already exists", status_code=409)
             theme.theme_display_name = payload.theme_display_name
@@ -77,12 +82,13 @@ class ThemeService:
         theme = await self.repo.update(theme)
         return self._to_response(theme)
 
-    async def delete(self, theme_key) -> ThemeResponse:
-        theme = await self.repo.get_by_id(theme_key)
+    async def delete(self, theme_key, company_id: UUID | None = None) -> ThemeResponse:
+        theme = await self.repo.get_by_id(theme_key, company_id)
         if not theme:
             raise BusinessException(message="Theme not found", status_code=404)
 
         theme.is_active = False
+        theme.is_deleted = True
         theme = await self.repo.update(theme)
         return self._to_response(theme)
 
@@ -90,6 +96,7 @@ class ThemeService:
     def _to_response(theme: Theme) -> ThemeResponse:
         return ThemeResponse(
             theme_key=theme.theme_key,
+            company_id=theme.company_id,
             theme_display_name=theme.theme_display_name,
             description=theme.description,
             duration_days=theme.duration_days,
