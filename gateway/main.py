@@ -34,7 +34,7 @@ app = FastAPI(title="API Gateway", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*","https://grades-assets-civilization-optional.trycloudflare.com"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
