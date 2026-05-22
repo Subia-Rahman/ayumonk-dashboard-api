@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 import pandas as pd
 
@@ -148,14 +149,208 @@ class CompanyService:
         return resp
 
     async def delete_company(self, company_id) -> CompanyResponse:
+        """Hard-delete a company and every row that references it.
+
+        Cascades through (in order, inside one transaction):
+          1. Per-tenant config rows reachable from `companies.id` directly or
+             via sessions / kpis / challenges / company_users.
+          2. RBAC rows scoped by `tenant_id = company_id` (cross-Base FK).
+          3. `company_users` rows + auth `users` rows whose email no longer
+             appears in any remaining `company_users` row.
+          4. The `companies` row itself.
+
+        Returns the captured CompanyResponse (the row no longer exists in DB).
+        """
         company = await self.repo.get_by_id(company_id)
         if not company:
             raise BusinessException(message="Company not found", status_code=404)
 
-        company.is_active = False
-        company.is_deleted = True
-        company = await self.repo.update(company)
-        return CompanyResponse.model_validate(company)
+        # Capture the response before we wipe the row.
+        location_map = await get_location_names([company.location_id], self.db)
+        captured = CompanyResponse.model_validate(company)
+        captured.location = location_map.get(company.location_id)
+        captured.is_active = False
+
+        params = {"cid": company_id, "cid_str": str(company_id)}
+
+        # ---------- Phase 1: leaf data reachable via sessions/kpis/users ----------
+        await self.db.execute(
+            text(
+                "DELETE FROM session_questions "
+                "WHERE session_id IN (SELECT id FROM sessions WHERE company_id = :cid)"
+            ),
+            params,
+        )
+        await self.db.execute(
+            text("DELETE FROM user_challenge_completions WHERE company_id = :cid"),
+            params,
+        )
+        await self.db.execute(
+            text(
+                "DELETE FROM kpi_suggestion_mappings "
+                "WHERE kpi_key IN (SELECT kpi_key FROM kpis WHERE company_id = :cid) "
+                "   OR question_key IN (SELECT id FROM kpi_questions WHERE company_id = :cid)"
+            ),
+            params,
+        )
+        await self.db.execute(
+            text("DELETE FROM kpi_challenges WHERE company_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM kpi_scoring WHERE company_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM kpi_questions WHERE company_id = :cid"), params
+        )
+        await self.db.execute(
+            text(
+                "DELETE FROM notifications "
+                "WHERE company_id = :cid "
+                "   OR user_id IN (SELECT id FROM company_users WHERE company_id = :cid)"
+            ),
+            params,
+        )
+        await self.db.execute(
+            text(
+                "DELETE FROM push_subscriptions "
+                "WHERE user_id IN (SELECT id FROM company_users WHERE company_id = :cid)"
+            ),
+            params,
+        )
+        await self.db.execute(
+            text(
+                "DELETE FROM reminder_settings "
+                "WHERE user_id IN (SELECT id FROM company_users WHERE company_id = :cid)"
+            ),
+            params,
+        )
+        await self.db.execute(
+            text("DELETE FROM cxo_metric_kpi_mapping WHERE company_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM cxo_metric_signal_mapping WHERE company_id = :cid"),
+            params,
+        )
+        # NOTE: cxo_metric_master is a global catalog in the live schema
+        # (cxo_metrics_up.sql migration). The SQLAlchemy model declares a
+        # per-tenant `company_id` column but the migrated DB doesn't have one,
+        # so we deliberately do NOT delete from it here. The mappings above
+        # are the per-tenant data.
+
+        # ---------- Phase 2: mid-level tenant entities ----------
+        await self.db.execute(
+            text("DELETE FROM sessions WHERE company_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM kpis WHERE company_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM themes WHERE company_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM challenges WHERE company_id = :cid"), params
+        )
+
+        # ---------- Phase 3: RBAC rows scoped to this tenant ----------
+        # NB: cross-Base FKs (rbac_3_layer.sql) — these all reference companies.id.
+        # role_menus/user_menus/role_permissions/user_permissions and
+        # role_policies/user_policies must be cleared before menus/roles/policies.
+        await self.db.execute(
+            text("DELETE FROM audit_logs WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM user_menus WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM role_menus WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM user_permissions WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM role_permissions WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM user_policies WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM role_policies WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM policies WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM menus WHERE tenant_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM roles WHERE tenant_id = :cid"), params
+        )
+
+        # ---------- Phase 4: company_users + orphaned auth users ----------
+        # employee_form_response.company_id is a free-text String column, so we
+        # match by the stringified UUID.
+        await self.db.execute(
+            text("DELETE FROM employee_form_response WHERE company_id = :cid_str"),
+            params,
+        )
+
+        emails_result = await self.db.execute(
+            text(
+                "SELECT DISTINCT email FROM company_users "
+                "WHERE company_id = :cid AND email IS NOT NULL"
+            ),
+            params,
+        )
+        emails = [row.email for row in emails_result.all()]
+
+        await self.db.execute(
+            text("DELETE FROM company_users WHERE company_id = :cid"), params
+        )
+        await self.db.execute(
+            text("DELETE FROM departments WHERE company_id = :cid"), params
+        )
+
+        # Now scrub the auth `users` rows whose email no longer appears in any
+        # remaining company_users row. user_menus/user_permissions/user_policies
+        # rows for those user_ids in OTHER tenants have to go first.
+        if emails:
+            orphan_ids_result = await self.db.execute(
+                text(
+                    "SELECT id FROM users "
+                    "WHERE email = ANY(:emails) "
+                    "  AND NOT EXISTS ("
+                    "      SELECT 1 FROM company_users cu WHERE cu.email = users.email"
+                    "  )"
+                ),
+                {"emails": emails},
+            )
+            orphan_user_ids = [row.id for row in orphan_ids_result.all()]
+
+            if orphan_user_ids:
+                user_params = {"uids": orphan_user_ids}
+                await self.db.execute(
+                    text("DELETE FROM user_menus WHERE user_id = ANY(:uids)"),
+                    user_params,
+                )
+                await self.db.execute(
+                    text("DELETE FROM user_permissions WHERE user_id = ANY(:uids)"),
+                    user_params,
+                )
+                await self.db.execute(
+                    text("DELETE FROM user_policies WHERE user_id = ANY(:uids)"),
+                    user_params,
+                )
+                await self.db.execute(
+                    text("DELETE FROM users WHERE id = ANY(:uids)"), user_params
+                )
+
+        # ---------- Phase 5: the company row ----------
+        await self.db.execute(
+            text("DELETE FROM companies WHERE id = :cid"), params
+        )
+
+        await self.db.commit()
+        return captured
 
     async def create_company_with_admin(
         self,

@@ -20,3 +20,4 @@ class Company(Base,AuditMixin):
         index=True,
     )
     no_of_employees = Column(Integer)
+    k_anonymity_floor = Column(Integer, nullable=False, server_default="5")

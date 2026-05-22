@@ -10,109 +10,14 @@ from authentication_service.app.core.db import get_db
 from authentication_service.app.core.dependencies import get_current_user
 from authentication_service.app.core.response import APIResponse
 from authentication_service.app.core.response_utils import error_response, success_response
+from authentication_service.app.models.menu import Menu
+from authentication_service.app.models.role import Role
+from authentication_service.app.models.role_menu import RoleMenu
 from config_service.app.models.company import Company
 
 
 logger = get_file_logger(name="rbac_matrix_api", prefix="rbac_matrix_api")
 router = APIRouter(prefix="/api/v1/auth", tags=["RBACMatrix"])
-
-
-# -----------------------------------------------------------------------------
-# Static matrix — mirrors the displayed dashboard sections. Role assignments
-# are platform-wide; per-company overrides are not modelled here.
-# -----------------------------------------------------------------------------
-RBAC_MATRIX_ROLES: list[dict] = [
-    {"key": "employee", "label": "Employee"},
-    {"key": "hr", "label": "HR Manager"},
-    {"key": "cxo", "label": "CXO"},
-    {"key": "admin", "label": "Company Admin"},
-    {"key": "ayumonk_admin", "label": "Ayumonk Admin"},
-    {"key": "super_admin", "label": "Super Admin"},
-]
-
-# permissions value ∈ {"none", "view", "full"}
-RBAC_MATRIX_SECTIONS: list[dict] = [
-    {
-        "key": "company_master",
-        "label": "Company Master",
-        "permissions": {
-            "employee": "none", "hr": "none", "cxo": "none",
-            "admin": "view", "ayumonk_admin": "full", "super_admin": "full",
-        },
-    },
-    {
-        "key": "company_users",
-        "label": "Company Users",
-        "permissions": {
-            "employee": "none", "hr": "view", "cxo": "none",
-            "admin": "full", "ayumonk_admin": "full", "super_admin": "full",
-        },
-    },
-    {
-        "key": "themes",
-        "label": "Themes",
-        "permissions": {
-            "employee": "none", "hr": "none", "cxo": "none",
-            "admin": "view", "ayumonk_admin": "full", "super_admin": "full",
-        },
-    },
-    {
-        "key": "kpis_questions",
-        "label": "KPIs & Questions",
-        "permissions": {
-            "employee": "none", "hr": "none", "cxo": "none",
-            "admin": "none", "ayumonk_admin": "full", "super_admin": "full",
-        },
-    },
-    {
-        "key": "challenges",
-        "label": "Challenges",
-        "permissions": {
-            "employee": "none", "hr": "view", "cxo": "none",
-            "admin": "view", "ayumonk_admin": "full", "super_admin": "full",
-        },
-    },
-    {
-        "key": "suggestion_master",
-        "label": "Suggestion Master",
-        "permissions": {
-            "employee": "none", "hr": "none", "cxo": "none",
-            "admin": "none", "ayumonk_admin": "full", "super_admin": "full",
-        },
-    },
-    {
-        "key": "sessions",
-        "label": "Sessions / Windows",
-        "permissions": {
-            "employee": "none", "hr": "full", "cxo": "view",
-            "admin": "full", "ayumonk_admin": "full", "super_admin": "full",
-        },
-    },
-    {
-        "key": "hr_analytics",
-        "label": "HR Analytics",
-        "permissions": {
-            "employee": "none", "hr": "full", "cxo": "full",
-            "admin": "none", "ayumonk_admin": "view", "super_admin": "full",
-        },
-    },
-    {
-        "key": "ayufinity",
-        "label": "Ayufinity / Products",
-        "permissions": {
-            "employee": "none", "hr": "none", "cxo": "none",
-            "admin": "none", "ayumonk_admin": "full", "super_admin": "full",
-        },
-    },
-    {
-        "key": "platform_settings",
-        "label": "Platform Settings",
-        "permissions": {
-            "employee": "none", "hr": "none", "cxo": "none",
-            "admin": "none", "ayumonk_admin": "none", "super_admin": "full",
-        },
-    },
-]
 
 
 # Role-string match for Company Admin authz check. JWT/user.role values vary in
@@ -127,21 +32,15 @@ def _is_company_admin(role: str | None) -> bool:
     return cleaned in _COMPANY_ADMIN_ALIASES
 
 
-class RbacMatrixRole(BaseModel):
-    key: str
-    label: str
-
-
 class RbacMatrixSection(BaseModel):
-    key: str
-    label: str
+    name: str
     permissions: dict[str, str]
 
 
 class RbacMatrixData(BaseModel):
     company_id: str | None = None
     company_name: str | None = None
-    roles: list[RbacMatrixRole]
+    roles: list[str]
     sections: list[RbacMatrixSection]
 
 
@@ -152,17 +51,20 @@ async def get_rbac_matrix(
     current_user=Depends(get_current_user),
 ):
     """
-    Return the role × section RBAC capability matrix used by the super-admin
-    dashboard. AuthZ rules:
+    Return the role × section RBAC capability matrix for one tenant.
 
+    AuthZ:
       * Platform admin (JWT is_platform_admin=true) — may pass any company_id;
-        omitting it returns the platform default (company_id null).
-      * Company admin (role normalises to "admin") — the query param is
-        ignored; the user's JWT tenant_id is used.
+        omitting it returns an empty matrix (no tenant context).
+      * Company admin — the query param is ignored; the user's JWT tenant_id
+        is used.
       * Any other role — 403.
 
-    The matrix itself is currently a static snapshot of role capabilities; the
-    company_id only scopes the company_name field, not the cell values.
+    Data shape: roles are the rows in `roles` scoped to this tenant
+    (`roles.tenant_id = :company_id`) — every role defined for the company,
+    whether or not any user is assigned to it. Sections are the menus that
+    have at least one row in `role_menus` for those roles. Each cell is the
+    `access_level` from `role_menus` (or "none" if no row exists).
     """
     logger.info(
         "REQUEST | get_rbac_matrix | user_id=%s | role=%s | company_id=%s | is_platform_admin=%s",
@@ -211,17 +113,86 @@ async def get_rbac_matrix(
                 status_code=403,
             )
 
+    # Platform admin without a selected company → empty matrix (no tenant).
+    if resolved_company_id is None:
+        data = RbacMatrixData(
+            company_id=None,
+            company_name=None,
+            roles=[],
+            sections=[],
+        )
+        return success_response(data=data, message="RBAC matrix fetched successfully")
+
+    # ------------------------------------------------------------------
+    # 1. Roles dynamic per company — every active row in `roles` scoped to
+    #    this tenant. Independent of whether any user is currently assigned.
+    # ------------------------------------------------------------------
+    role_result = await db.execute(
+        select(Role.id, Role.name)
+        .where(Role.tenant_id == resolved_company_id)
+        .where(Role.is_active.is_(True))
+        .order_by(Role.id)
+    )
+    role_rows = role_result.all()
+    role_ids = [r.id for r in role_rows]
+    role_names_by_id = {r.id: r.name for r in role_rows}
+    role_names = [r.name for r in role_rows]
+
+    if not role_ids:
+        data = RbacMatrixData(
+            company_id=str(resolved_company_id),
+            company_name=company_name,
+            roles=[],
+            sections=[],
+        )
+        return success_response(data=data, message="RBAC matrix fetched successfully")
+
+    # ------------------------------------------------------------------
+    # 2. Sections dynamic — menus that have at least one role_menus row
+    #    for any of the roles found above. Ordered by Menu.order_no.
+    # ------------------------------------------------------------------
+    menu_result = await db.execute(
+        select(Menu.id, Menu.name, Menu.order_no)
+        .join(RoleMenu, RoleMenu.menu_id == Menu.id)
+        .where(RoleMenu.role_id.in_(role_ids))
+        .where(Menu.is_active.is_(True))
+        .distinct()
+        .order_by(Menu.order_no, Menu.id)
+    )
+    menu_rows = menu_result.all()
+
+    # ------------------------------------------------------------------
+    # 3. Cell values — one row per (role_id, menu_id) we care about.
+    # ------------------------------------------------------------------
+    perm_result = await db.execute(
+        select(RoleMenu.role_id, RoleMenu.menu_id, RoleMenu.access_level)
+        .where(RoleMenu.role_id.in_(role_ids))
+    )
+    access_by_cell: dict[tuple[int, int], str] = {
+        (row.role_id, row.menu_id): row.access_level for row in perm_result.all()
+    }
+
+    sections: list[RbacMatrixSection] = []
+    for menu in menu_rows:
+        permissions = {
+            role_names_by_id[rid]: access_by_cell.get((rid, menu.id), "none")
+            for rid in role_ids
+        }
+        sections.append(RbacMatrixSection(name=menu.name, permissions=permissions))
+
     data = RbacMatrixData(
-        company_id=str(resolved_company_id) if resolved_company_id else None,
+        company_id=str(resolved_company_id),
         company_name=company_name,
-        roles=[RbacMatrixRole(**r) for r in RBAC_MATRIX_ROLES],
-        sections=[RbacMatrixSection(**s) for s in RBAC_MATRIX_SECTIONS],
+        roles=role_names,
+        sections=sections,
     )
 
     logger.info(
-        "RESPONSE | get_rbac_matrix | user_id=%s | resolved_company_id=%s | company_name=%s",
+        "RESPONSE | get_rbac_matrix | user_id=%s | resolved_company_id=%s | "
+        "roles=%d | sections=%d",
         getattr(current_user, "user_id", None),
         resolved_company_id,
-        company_name,
+        len(role_names),
+        len(sections),
     )
     return success_response(data=data, message="RBAC matrix fetched successfully")

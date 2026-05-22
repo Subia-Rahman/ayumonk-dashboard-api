@@ -12,6 +12,7 @@ from . import challenges
 from . import dashboard
 from . import admin_suggestions
 from . import admin_kpi_suggestion_mappings
+from . import admin_cxo_metrics
 from . import departments
 from . import locations
 from . import notifications
@@ -31,6 +32,7 @@ router.include_router(challenges.router)
 router.include_router(dashboard.router)
 router.include_router(admin_suggestions.router)
 router.include_router(admin_kpi_suggestion_mappings.router)
+router.include_router(admin_cxo_metrics.router)
 router.include_router(departments.router)
 router.include_router(locations.router)
 router.include_router(reminder_settings.router)

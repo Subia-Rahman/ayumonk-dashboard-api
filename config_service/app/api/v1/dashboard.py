@@ -17,6 +17,24 @@ from config_service.app.schemas.challenge_actions import (
     ChallengeActionResponse,
 )
 from config_service.app.services.challenge_actions import ChallengeActionService
+from config_service.app.core.cxo_metrics_dependencies import (
+    CxoAccessContext,
+    require_cxo_dashboard_access,
+)
+from config_service.app.schemas.cxo_metrics import (
+    CxoByDimensionResponse,
+    CxoBucket,
+    CxoMeta,
+)
+from config_service.app.services.cxo_dashboard import CxoByDimensionService
+from config_service.app.schemas.employee_snapshots import (
+    EmployeeSnapshotMeta,
+    EmployeeSnapshotResponse,
+    EmployeeSnapshotRow,
+)
+from config_service.app.services.employee_snapshots import EmployeeSnapshotsService
+from typing import Literal
+from uuid import UUID
 
 
 logger = get_file_logger(name="dashboard_api", prefix="dashboard_api")
@@ -101,3 +119,186 @@ async def mark_challenge_action(
     except Exception:
         logger.exception("ERROR | mark_challenge_action | user_id=%s", current_user.user_id)
         return error_response(message="Failed to mark challenge action", status_code=500)
+
+
+# -----------------------------------------------------------------------------
+# CXO dashboard — aggregate metric values bucketed by dept or age_band.
+# Reads v_user_cxo (productivity/absenteeism) or compute_user_engagement(uuid)
+# (engagement), applies k-anonymity per bucket, returns canonical ordering.
+#
+# NOTE(schema-issue-3): `location_id` is intentionally not a parameter here.
+# `company_users` has no location_id column; only `companies.location_id`
+# exists, which means filtering by location after company_id is already
+# scoped is a no-op. The spec's recommended resolution is to drop the param
+# until company_users gains the column; we follow that recommendation.
+# -----------------------------------------------------------------------------
+@router.get(
+    "/cxo-by-dimension",
+    response_model=APIResponse[CxoByDimensionResponse],
+    summary="CXO metrics by dept or age band",
+    description=(
+        "Aggregate Productivity / Engagement / Absenteeism across employees, "
+        "bucketed by department or age band. Drops buckets below the "
+        "company's k-anonymity floor and reports the count of dropped "
+        "buckets in `meta.suppressedBuckets`."
+    ),
+    responses={
+        400: {"description": "Invalid query parameter combination"},
+        403: {"description": "Caller cannot access this company"},
+        404: {"description": "Company not found"},
+    },
+)
+async def get_cxo_by_dimension(
+    metric: Literal["productivity", "engagement", "absenteeism"] = Query(...),
+    breakdown: Literal["dept", "age_band"] = Query(...),
+    company_id: UUID | None = Query(
+        default=None,
+        description=(
+            "Required for platform admins; ignored for company-tier callers "
+            "(forced to their own company)."
+        ),
+    ),
+    department_id: UUID | None = Query(default=None),
+    age_band: str | None = Query(default=None),
+    gender: Literal["Male", "Female", "Other"] | None = Query(default=None),
+    db: AsyncSession = Depends(get_db),
+    access: CxoAccessContext = Depends(require_cxo_dashboard_access),
+):
+    logger.info(
+        "REQUEST | cxo_by_dimension | user_id=%s | metric=%s | breakdown=%s | company_id=%s",
+        access.current_user.user_id,
+        metric,
+        breakdown,
+        company_id,
+    )
+    db.info["user_id"] = access.current_user.user_id
+
+    # company_id resolution per spec: platform admins use the query param
+    # (required); company-tier callers are forced to their own tenant.
+    if access.is_platform_admin:
+        if company_id is None:
+            return error_response(
+                message="company_id is required for platform admins",
+                status_code=400,
+            )
+        resolved_company_id = company_id
+    else:
+        if access.tenant_id is None:
+            return error_response(
+                message="No tenant assignment on current user",
+                status_code=403,
+            )
+        resolved_company_id = access.tenant_id
+
+    try:
+        service = CxoByDimensionService(db)
+        result = await service.fetch(
+            metric=metric,
+            breakdown=breakdown,
+            company_id=resolved_company_id,
+            department_id=department_id,
+            age_band=age_band,
+            gender=gender,
+        )
+        return success_response(
+            data=CxoByDimensionResponse(
+                data=[CxoBucket(**bucket) for bucket in result["data"]],
+                meta=CxoMeta(**result["meta"]),
+            ),
+            message="CXO dashboard fetched successfully",
+        )
+    except BusinessException as e:
+        logger.warning("BUSINESS_ERROR | cxo_by_dimension | %s", e.message)
+        return error_response(message=e.message, status_code=e.status_code, errors=e.errors)
+    except Exception:
+        logger.exception(
+            "ERROR | cxo_by_dimension | user_id=%s", access.current_user.user_id
+        )
+        return error_response(message="Failed to fetch CXO dashboard", status_code=500)
+
+
+# -----------------------------------------------------------------------------
+# Employee snapshots feed (HR_ROWS) — one row per active employee with all
+# wellness/CXO metrics pre-computed. The HR Analytics dashboard does its own
+# grouping/averaging client-side.
+#
+# Company-tier callers (admin / hr / cxo) are forced onto their own tenant —
+# the query param is ignored. Platform admins must pass `company_id`.
+# -----------------------------------------------------------------------------
+@router.get(
+    "/employee-snapshots",
+    response_model=APIResponse[EmployeeSnapshotResponse],
+    summary="Per-employee wellness + CXO snapshot feed",
+    description=(
+        "One row per active employee. Demographic fields come from "
+        "`company_users` (+ `companies.location_id` for `loc` — every "
+        "employee in a single-location company shares one value, surfaced as "
+        "`meta.locationGranularity=\"company\"`). KPI columns (`sleep`, "
+        "`stress`, `nutrition`) are pivoted by case-insensitive trimmed "
+        "`kpis.display_name`. CXO columns (`productivity`, `engagement`, "
+        "`absenteeism`) follow the per-company mapping rules. Metrics whose "
+        "mapping is empty (or whose master row hasn't been seeded for this "
+        "company) appear in `meta.missingMappings`; KPIs the company doesn't "
+        "have appear in `meta.missingKpis`. Neither condition fails the "
+        "request — the field is just `null` for affected employees."
+    ),
+    responses={
+        400: {"description": "company_id missing for a platform admin"},
+        403: {"description": "Caller cannot access this company"},
+    },
+)
+async def get_employee_snapshots(
+    company_id: UUID | None = Query(
+        default=None,
+        description=(
+            "Required for platform admins; ignored for company-tier callers "
+            "(forced to their own company)."
+        ),
+    ),
+    db: AsyncSession = Depends(get_db),
+    access: CxoAccessContext = Depends(require_cxo_dashboard_access),
+):
+    logger.info(
+        "REQUEST | employee_snapshots | user_id=%s | role=%s | company_id=%s",
+        access.current_user.user_id,
+        access.resolved_role,
+        company_id,
+    )
+    db.info["user_id"] = access.current_user.user_id
+
+    if access.is_platform_admin:
+        if company_id is None:
+            return error_response(
+                message="company_id is required for platform admins",
+                status_code=400,
+            )
+        resolved_company_id = company_id
+    else:
+        if access.tenant_id is None:
+            return error_response(
+                message="No tenant assignment on current user",
+                status_code=403,
+            )
+        resolved_company_id = access.tenant_id
+
+    try:
+        result = await EmployeeSnapshotsService(db).fetch(
+            company_id=resolved_company_id
+        )
+        return success_response(
+            data=EmployeeSnapshotResponse(
+                data=[EmployeeSnapshotRow(**row) for row in result["data"]],
+                meta=EmployeeSnapshotMeta(**result["meta"]),
+            ),
+            message="Employee snapshots fetched successfully",
+        )
+    except BusinessException as e:
+        logger.warning("BUSINESS_ERROR | employee_snapshots | %s", e.message)
+        return error_response(message=e.message, status_code=e.status_code, errors=e.errors)
+    except Exception:
+        logger.exception(
+            "ERROR | employee_snapshots | user_id=%s", access.current_user.user_id
+        )
+        return error_response(
+            message="Failed to fetch employee snapshots", status_code=500
+        )

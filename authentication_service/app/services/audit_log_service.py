@@ -53,3 +53,30 @@ class AuditLogService:
                 new_value=_json_safe(new_value),
             )
         )
+
+    def queue(
+        self,
+        user_id: int,
+        tenant_id: UUID,
+        action: str,
+        entity: str,
+        old_value=None,
+        new_value=None,
+    ) -> AuditLog:
+        """Add an audit log row to the session WITHOUT committing.
+
+        Use this when you already own a transaction (e.g. inside
+        ``async with db.begin_nested():``). The plain ``log()`` method
+        commits internally, which closes the outer transaction and breaks
+        the surrounding savepoint context manager.
+        """
+        row = AuditLog(
+            user_id=user_id,
+            tenant_id=tenant_id,
+            action=action,
+            entity=entity,
+            old_value=_json_safe(old_value),
+            new_value=_json_safe(new_value),
+        )
+        self.repo.db.add(row)
+        return row

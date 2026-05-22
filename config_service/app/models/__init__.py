@@ -14,3 +14,8 @@ from .push_subscription import PushSubscription
 from .reminder_settings import ReminderSettings
 from .theme import Theme
 from .user_challenge_completion import UserChallengeCompletion
+from .cxo_metrics import (
+    CxoMetricKpiMapping,
+    CxoMetricMaster,
+    CxoMetricSignalMapping,
+)
