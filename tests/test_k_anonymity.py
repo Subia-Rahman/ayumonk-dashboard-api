@@ -1,7 +1,7 @@
 """K-anonymity bucket suppression test.
 
-Verifies that buckets with cohort_size < companies.k_anonymity_floor are
-dropped from the response and counted in meta.suppressedBuckets.
+Verifies that buckets with cohort_size < K_ANONYMITY_FLOOR are dropped
+from the response and counted in meta.suppressedBuckets.
 
 This is implemented purely in the service layer (CxoByDimensionService),
 so we can test it by stubbing the SQL execute() call rather than spinning
@@ -12,7 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from config_service.app.services.cxo_dashboard import CxoByDimensionService
+from config_service.app.services.cxo_dashboard import (
+    CxoByDimensionService,
+    K_ANONYMITY_FLOOR,
+)
 
 
 @pytest.mark.asyncio
@@ -20,10 +23,10 @@ async def test_buckets_below_floor_are_suppressed():
     """Floor=5: a bucket with cohort_size=3 must be dropped and counted as
     suppressed, while a bucket with cohort_size=10 stays."""
 
-    # First call resolves the k-anonymity floor; second call is the cohort
+    # First call verifies the company exists; second call is the cohort
     # query whose rows we feed in directly.
-    floor_result = MagicMock()
-    floor_result.scalar = MagicMock(return_value=5)
+    exists_result = MagicMock()
+    exists_result.scalar = MagicMock(return_value=1)
 
     rows_result = MagicMock()
     rows_result.all = MagicMock(
@@ -35,7 +38,7 @@ async def test_buckets_below_floor_are_suppressed():
     )
 
     db = MagicMock()
-    db.execute = AsyncMock(side_effect=[floor_result, rows_result])
+    db.execute = AsyncMock(side_effect=[exists_result, rows_result])
 
     svc = CxoByDimensionService(db)
     result = await svc.fetch(
@@ -53,14 +56,15 @@ async def test_buckets_below_floor_are_suppressed():
     assert "Sales" in labels
     assert result["meta"]["suppressedBuckets"] == 1
     assert result["meta"]["cohortSize"] == 21
-    assert result["meta"]["kAnonymityFloor"] == 5
+    assert result["meta"]["kAnonymityFloor"] == K_ANONYMITY_FLOOR
 
 
 @pytest.mark.asyncio
 async def test_age_band_ordering_is_canonical():
-    floor_result = MagicMock()
-    floor_result.scalar = MagicMock(return_value=1)
+    exists_result = MagicMock()
+    exists_result.scalar = MagicMock(return_value=1)
 
+    # All buckets are size 10 so they survive the floor regardless of value.
     rows_result = MagicMock()
     rows_result.all = MagicMock(
         return_value=[
@@ -73,7 +77,7 @@ async def test_age_band_ordering_is_canonical():
     )
 
     db = MagicMock()
-    db.execute = AsyncMock(side_effect=[floor_result, rows_result])
+    db.execute = AsyncMock(side_effect=[exists_result, rows_result])
 
     svc = CxoByDimensionService(db)
     result = await svc.fetch(

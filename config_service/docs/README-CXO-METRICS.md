@@ -89,11 +89,10 @@ outside the dashboard's SQL pipeline.
 
 ## K-anonymity
 
-`companies.k_anonymity_floor` (default 5) is the minimum cohort size for a
-bucket to appear in the dashboard response. Buckets below the floor are
-dropped silently and counted in `meta.suppressedBuckets`. The floor is
-loaded once per request from `companies` so it can be adjusted per-tenant
-without a code change.
+`K_ANONYMITY_FLOOR` (5) defined in `services/cxo_dashboard.py` is the
+minimum cohort size for a bucket to appear in the dashboard response.
+Buckets below the floor are dropped silently and counted in
+`meta.suppressedBuckets`.
 
 ## Age-band ordering
 

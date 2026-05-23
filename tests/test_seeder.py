@@ -82,8 +82,8 @@ async def _ensure_test_company(db_session):
 
     cid_row = await db_session.execute(
         text(
-            "INSERT INTO companies (company_name, k_anonymity_floor) "
-            "VALUES ('Seeder Test Co', 5) RETURNING id"
+            "INSERT INTO companies (company_name) "
+            "VALUES ('Seeder Test Co') RETURNING id"
         )
     )
     cid = cid_row.scalar()

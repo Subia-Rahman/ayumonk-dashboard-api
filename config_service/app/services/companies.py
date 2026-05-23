@@ -17,6 +17,7 @@ from config_service.app.schemas.companies import (
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.company_users import CompanyUser
 from config_service.app.schemas.company_users import CompanyUserResponse
+from config_service.app.services.company_defaults import assign_default_company_data
 from config_service.app.services.locations import (
     get_location_names,
     get_or_create_location,
@@ -89,8 +90,35 @@ class CompanyService:
                 no_of_employees=clean_int(row.get("no_of_employees"))
             )
 
-            await self.repo.create(company)
-            created += 1
+            # Same-transaction: company INSERT + default RBAC seeding must
+            # succeed or roll back together. Each row is its own atomic unit
+            # so one bad row doesn't poison the whole upload.
+            try:
+                self.logger.info("Creating new company: %s", company_name)
+                self.db.add(company)
+                await self.db.flush()
+
+                self.logger.info(
+                    "Assigning default data to company: %s", company.id
+                )
+                summary = await assign_default_company_data(
+                    company_id=str(company.id),
+                    db=self.db,
+                )
+                self.logger.info(
+                    "Default data assignment complete: %s", summary
+                )
+
+                await self.db.commit()
+                created += 1
+            except Exception:
+                await self.db.rollback()
+                self.logger.exception(
+                    "Company creation failed during default data "
+                    "assignment for company_name=%s",
+                    company_name,
+                )
+                skipped.append(company_name)
 
         return {
             "created": created,
@@ -360,22 +388,72 @@ class CompanyService:
         if existing:
             raise BusinessException(message="Company name already exists", status_code=409)
 
-        location_id = await get_or_create_location(payload.company.location, self.db)
-        company = await self.repo.create(
-            Company(
-                company_name=payload.company.company_name.strip(),
-                industry=payload.company.industry,
-                size_bucket=payload.company.size_bucket,
-                email=payload.company.email,
-                phone=payload.company.phone,
-                location_id=location_id,
-                no_of_employees=payload.company.no_of_employees,
-            )
-        )
-        admin_resp = None
+        # Validate admin uniqueness up front so we don't insert the company
+        # row only to fail on the admin step inside the transaction.
         if payload.admin is not None:
-            admin_resp = await self._create_company_admin(company, payload.admin)
+            await self._validate_admin_unique(payload.admin)
 
+        location_id = await get_or_create_location(payload.company.location, self.db)
+
+        company = Company(
+            company_name=payload.company.company_name.strip(),
+            industry=payload.company.industry,
+            size_bucket=payload.company.size_bucket,
+            email=payload.company.email,
+            phone=payload.company.phone,
+            location_id=location_id,
+            no_of_employees=payload.company.no_of_employees,
+        )
+
+        admin_resp: CompanyUserResponse | None = None
+        email_to_send: tuple[str, str, str] | None = None
+        try:
+            self.logger.info(
+                "Creating new company: %s", payload.company.company_name
+            )
+            self.db.add(company)
+            await self.db.flush()  # get company.id without committing
+
+            self.logger.info(
+                "Assigning default data to company: %s", company.id
+            )
+            summary = await assign_default_company_data(
+                company_id=str(company.id),
+                db=self.db,
+            )
+            self.logger.info("Default data assignment complete: %s", summary)
+
+            if payload.admin is not None:
+                admin_resp, email_to_send = await self._add_company_admin_in_txn(
+                    company, payload.admin
+                )
+
+            await self.db.commit()
+        except BusinessException:
+            await self.db.rollback()
+            raise
+        except Exception:
+            await self.db.rollback()
+            self.logger.exception(
+                "Company creation failed during default data assignment "
+                "for company_name=%s",
+                payload.company.company_name,
+            )
+            raise BusinessException(
+                message="Company creation failed. Default data could not be assigned.",
+                status_code=500,
+            )
+
+        # Side-effect (email) happens AFTER commit so a failed send never
+        # rolls back a successfully created tenant.
+        if email_to_send is not None:
+            await self._send_admin_credentials_email(
+                email=email_to_send[0],
+                username=email_to_send[1],
+                password=email_to_send[2],
+            )
+
+        await self.db.refresh(company)
         location_map = await get_location_names([company.location_id], self.db)
         company_resp = CompanyResponse.model_validate(company)
         company_resp.location = location_map.get(company.location_id)
@@ -471,6 +549,57 @@ class CompanyService:
                 resp.password = auth_user.hashed_password
             result[company_id] = resp
         return result
+
+    async def _validate_admin_unique(
+        self, payload: CompanyAdminCreateRequest
+    ) -> None:
+        if not payload.emp_id:
+            raise BusinessException(message="emp_id is required for admin", status_code=422)
+        if await self.auth_repo.get_by_username(payload.emp_id):
+            raise BusinessException(message="Admin emp_id already exists", status_code=409)
+        if await self.company_user_repo.get_by_email(payload.email):
+            raise BusinessException(message="User email already exists", status_code=409)
+        if await self.auth_repo.get_by_email(payload.email):
+            raise BusinessException(message="User email already exists", status_code=409)
+
+    async def _add_company_admin_in_txn(
+        self,
+        company: Company,
+        payload: CompanyAdminCreateRequest,
+    ) -> tuple[CompanyUserResponse, tuple[str, str, str]]:
+        """Insert the company admin + auth user using db.add + db.flush so
+        they share the caller's transaction. Returns the response payload and
+        the credentials tuple to email once the transaction commits.
+        """
+        admin_user = CompanyUser(
+            emp_id=payload.emp_id,
+            full_name=payload.full_name,
+            department=payload.department,
+            department_id=payload.department_id,
+            role_id=payload.role_id,
+            gender=payload.gender,
+            phone=payload.phone,
+            age_band=payload.age_band,
+            email=payload.email,
+            company_id=company.id,
+            is_active=payload.is_active,
+        )
+        self.db.add(admin_user)
+
+        auth_user = User(
+            username=payload.emp_id,
+            email=payload.email,
+            hashed_password=payload.password,
+            role=payload.role_name or "ADMIN",
+            is_active=payload.is_active,
+        )
+        self.db.add(auth_user)
+        await self.db.flush()
+
+        resp = CompanyUserResponse.model_validate(admin_user)
+        resp.username = auth_user.username
+        resp.password = auth_user.hashed_password
+        return resp, (payload.email, payload.emp_id, payload.password)
 
     async def _create_company_admin(
         self,

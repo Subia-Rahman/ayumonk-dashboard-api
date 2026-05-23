@@ -148,7 +148,7 @@ async def upload_companies(
             current_user.user_id,
             file.filename
         )
-        error_response(
+        return error_response(
             message="Failed to upload companies",
             status_code=500
         )

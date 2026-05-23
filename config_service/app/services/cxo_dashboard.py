@@ -2,8 +2,8 @@
 
 Reads from v_user_cxo (Productivity / Absenteeism) or invokes
 compute_user_engagement() per user (Engagement). Applies k-anonymity at the
-bucket level: any breakdown bucket below `companies.k_anonymity_floor` is
-dropped from the response and counted in `meta.suppressedBuckets`.
+bucket level: any breakdown bucket below `K_ANONYMITY_FLOOR` is dropped
+from the response and counted in `meta.suppressedBuckets`.
 """
 
 from datetime import datetime
@@ -21,6 +21,10 @@ from config_service.app.core.config import APP_TZ
 
 MetricCode = Literal["productivity", "engagement", "absenteeism"]
 BreakdownCode = Literal["dept", "age_band"]
+
+# Minimum cohort size for a bucket to appear in the dashboard response.
+# Buckets below the floor are dropped and counted in `meta.suppressedBuckets`.
+K_ANONYMITY_FLOOR = 5
 
 # Canonical sort order for age bands. Buckets outside this set sort last,
 # alphabetically.
@@ -73,8 +77,8 @@ def _cohort_clauses() -> str:
 
 def _productivity_query(*, breakdown: BreakdownCode) -> str:
     """Returns (label, value, cohort_size) rows for Productivity, grouped by
-    department or age_band. Applies k-anonymity at the HAVING level using
-    companies.k_anonymity_floor."""
+    department or age_band. K-anonymity is applied in Python using
+    K_ANONYMITY_FLOOR."""
     if breakdown == "dept":
         label_col = "d.name"
         group_col = "v.department_id"
@@ -201,16 +205,14 @@ class CxoByDimensionService:
         age_band: Optional[str],
         gender: Optional[str],
     ) -> dict:
-        # K-anonymity floor lives on companies; load it once.
-        floor_row = await self.db.execute(
-            sql_text(
-                "SELECT k_anonymity_floor FROM companies WHERE id = :id"
-            ),
+        # Verify the company exists; the floor is a code-level constant.
+        company_row = await self.db.execute(
+            sql_text("SELECT 1 FROM companies WHERE id = :id"),
             {"id": company_id},
         )
-        floor = floor_row.scalar()
-        if floor is None:
+        if company_row.scalar() is None:
             raise BusinessException(message="Company not found", status_code=404)
+        floor = K_ANONYMITY_FLOOR
 
         builder = _QUERY_BUILDERS[metric]
         stmt = sql_text(builder(breakdown=breakdown))
