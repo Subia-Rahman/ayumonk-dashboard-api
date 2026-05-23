@@ -86,53 +86,95 @@ class CxoMetricRead(BaseModel):
     company_id: UUID
     metric_code: str
     display_name: str
-    unit: str
-    scale_min: Decimal | None = None
-    scale_max: Decimal | None = None
-    baseline: Decimal | None = None
-    formula_type: str
     description: Optional[str] = None
-    methodology_ref: Optional[str] = None
     is_active: bool
+    is_deleted: bool
     created_at: datetime
     updated_at: datetime
+    created_by: Optional[int] = None
+    updated_by: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
 
-# Form payload for POST /admin/cxo-metrics. Mirrors the cxo_metric_master
-# column types/constraints — keep the bounds in sync with the table DDL.
-class CxoMetricMasterCreate(BaseModel):
+class CxoMetricListResponse(BaseModel):
+    items: list[CxoMetricRead]
+
+
+# ---------------------------------------------------------------------------
+# CXO metric master CRUD payloads
+# ---------------------------------------------------------------------------
+
+
+class CxoMetricCreate(BaseModel):
     company_id: UUID
     metric_code: str = Field(min_length=1, max_length=30)
     display_name: str = Field(min_length=1, max_length=100)
-    unit: str = Field(min_length=1, max_length=20)
-    scale_min: Decimal = Field(default=Decimal("0"), max_digits=6, decimal_places=2)
-    scale_max: Decimal = Field(default=Decimal("100"), max_digits=6, decimal_places=2)
-    baseline: Decimal | None = Field(default=None, max_digits=6, decimal_places=2)
-    formula_type: Literal["WEIGHTED_AVG", "DEFICIT_SUM", "COMPOSITE"]
     description: Optional[str] = None
-    methodology_ref: Optional[str] = None
+    is_active: bool = True
 
 
-# PATCH-style payload for PUT /admin/cxo-metrics/{metric_code}. Every field is
-# optional — only the keys actually present in the request body are applied
-# (via `model_dump(exclude_unset=True)`). `metric_code`, `company_id`, and
-# `formula_type` are intentionally absent: rename/move/recategorize requires
-# delete + recreate so mappings stay consistent.
-class CxoMetricMasterUpdate(BaseModel):
-    company_id: UUID
+class CxoMetricUpdate(BaseModel):
+    """PATCH-style: only the supplied fields are applied. `company_id` and
+    `metric_code` are intentionally absent — they're immutable because the
+    KPI mapping rows reference `metric_id` and `(company_id, metric_id)`."""
     display_name: Optional[str] = Field(default=None, min_length=1, max_length=100)
-    unit: Optional[str] = Field(default=None, min_length=1, max_length=20)
-    scale_min: Optional[Decimal] = Field(default=None, max_digits=6, decimal_places=2)
-    scale_max: Optional[Decimal] = Field(default=None, max_digits=6, decimal_places=2)
-    baseline: Optional[Decimal] = Field(default=None, max_digits=6, decimal_places=2)
     description: Optional[str] = None
-    methodology_ref: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
-class CxoMetricListResponse(BaseModel):
-    items: list[CxoMetricRead]
+# ---------------------------------------------------------------------------
+# CXO KPI mapping CRUD schemas
+# ---------------------------------------------------------------------------
+
+
+class CxoKpiMappingItem(BaseModel):
+    """One KPI's contribution to a metric. Used inside the create request."""
+    kpi_key: UUID
+    weight: Decimal = Field(ge=0, max_digits=4, decimal_places=3)
+
+
+class CxoKpiMappingCreateRequest(BaseModel):
+    company_id: UUID
+    metric_id: UUID
+    kpi_mappings: list[CxoKpiMappingItem] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _no_intra_request_dupes(self):
+        keys = [item.kpi_key for item in self.kpi_mappings]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Duplicate kpi_key in kpi_mappings")
+        return self
+
+
+class CxoKpiMappingUpdateRequest(BaseModel):
+    """Update the weight on a single mapping row."""
+    weight: Decimal = Field(ge=0, max_digits=4, decimal_places=3)
+
+
+class CxoKpiMappingStatusUpdate(BaseModel):
+    is_active: bool
+
+
+class CxoKpiMappingRead(BaseModel):
+    id: UUID
+    company_id: UUID
+    metric_id: UUID
+    kpi_key: UUID
+    kpi_name: Optional[str] = None
+    weight: Decimal
+    is_active: bool
+    is_deleted: bool
+    created_at: datetime
+    updated_at: datetime
+    created_by: Optional[int] = None
+    updated_by: Optional[int] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class CxoKpiMappingListResponse(BaseModel):
+    items: list[CxoKpiMappingRead]
 
 
 class KpiMappingResponse(BaseModel):

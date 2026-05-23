@@ -26,6 +26,15 @@ class CxoMetricMasterRepository:
         res = await self.db.execute(stmt)
         return list(res.scalars().all())
 
+    async def get_by_id(self, metric_id: UUID) -> CxoMetricMaster | None:
+        """Fetch by PK, excluding hard soft-deleted rows."""
+        stmt = select(CxoMetricMaster).where(
+            CxoMetricMaster.id == metric_id,
+            CxoMetricMaster.is_deleted == False,  # noqa: E712
+        )
+        res = await self.db.execute(stmt)
+        return res.scalar_one_or_none()
+
     async def get_by_code(
         self, metric_code: str, *, company_id: UUID
     ) -> CxoMetricMaster | None:
@@ -64,6 +73,14 @@ class CxoMetricMasterRepository:
 class CxoMetricKpiMappingRepository:
     def __init__(self, db: AsyncSession):
         self.db = db
+
+    async def get_by_id(self, mapping_id: UUID) -> CxoMetricKpiMapping | None:
+        stmt = select(CxoMetricKpiMapping).where(
+            CxoMetricKpiMapping.id == mapping_id,
+            CxoMetricKpiMapping.is_deleted == False,  # noqa: E712
+        )
+        res = await self.db.execute(stmt)
+        return res.scalar_one_or_none()
 
     async def list_active_for_metric(
         self, *, company_id: UUID, metric_id: UUID

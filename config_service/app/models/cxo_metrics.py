@@ -24,10 +24,6 @@ class CxoMetricMaster(Base, AuditMixin):
 
     __tablename__ = "cxo_metric_master"
     __table_args__ = (
-        CheckConstraint(
-            "formula_type IN ('WEIGHTED_AVG','DEFICIT_SUM','COMPOSITE')",
-            name="ck_formula_type",
-        ),
         UniqueConstraint(
             "company_id",
             "metric_code",
@@ -43,13 +39,7 @@ class CxoMetricMaster(Base, AuditMixin):
     )
     metric_code = Column(String(30), nullable=False)
     display_name = Column(String(100), nullable=False)
-    unit = Column(String(20), nullable=False)
-    scale_min = Column(Numeric(6, 2), server_default=text("0"))
-    scale_max = Column(Numeric(6, 2), server_default=text("100"))
-    baseline = Column(Numeric(6, 2), nullable=True)
-    formula_type = Column(String(20), nullable=False)
     description = Column(Text, nullable=True)
-    methodology_ref = Column(Text, nullable=True)
 
 
 class CxoMetricKpiMapping(Base, AuditMixin):
@@ -89,7 +79,6 @@ class CxoMetricKpiMapping(Base, AuditMixin):
         nullable=False,
     )
     weight = Column(Numeric(4, 3), nullable=False)
-    threshold = Column(Numeric(3, 2), nullable=True)
 
 
 class CxoMetricSignalMapping(Base, AuditMixin):
