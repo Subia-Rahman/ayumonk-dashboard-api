@@ -19,3 +19,7 @@ from .cxo_metrics import (
     CxoMetricMaster,
     CxoMetricSignalMapping,
 )
+from .wellness_dimensions import (
+    WellnessDimension,
+    WellnessDimensionKpiMapping,
+)

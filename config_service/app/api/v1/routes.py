@@ -14,10 +14,14 @@ from . import admin_suggestions
 from . import admin_kpi_suggestion_mappings
 from . import admin_cxo_metrics
 from . import admin_cxo_kpi_mapping
+from . import hr_analytics
+from . import hr_wellness_analytics
 from . import departments
 from . import locations
 from . import notifications
 from . import reminder_settings
+from . import wellness_dimensions
+from . import wellness_dimension_kpi_mappings
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(health.router, prefix="/health", tags=["health"])
@@ -35,7 +39,11 @@ router.include_router(admin_suggestions.router)
 router.include_router(admin_kpi_suggestion_mappings.router)
 router.include_router(admin_cxo_metrics.router)
 router.include_router(admin_cxo_kpi_mapping.router)
+router.include_router(hr_analytics.router)
+router.include_router(hr_wellness_analytics.router)
 router.include_router(departments.router)
 router.include_router(locations.router)
 router.include_router(reminder_settings.router)
 router.include_router(notifications.router)
+router.include_router(wellness_dimensions.router)
+router.include_router(wellness_dimension_kpi_mappings.router)

@@ -234,25 +234,24 @@ class SeedResult(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Dashboard endpoint
+# HR CXO metrics endpoint (GET /api/v1/hr/cxo-metrics)
 # ---------------------------------------------------------------------------
 
 
-class CxoBucket(BaseModel):
+class HrCxoBucket(BaseModel):
+    """One aggregation bucket (department name or age band)."""
     label: str
     value: Decimal
-    cohortSize: int  # noqa: N815 — wire format matches existing dashboard responses.
 
 
-class CxoMeta(BaseModel):
+class HrCxoMetricResponse(BaseModel):
+    """Combined response: both breakdowns for a single CXO metric."""
     metric: str
-    breakdown: str
-    cohortSize: int  # noqa: N815
-    kAnonymityFloor: int  # noqa: N815
-    updatedAt: datetime  # noqa: N815
-    suppressedBuckets: int  # noqa: N815
+    by_department: list[HrCxoBucket]
+    by_age_band: list[HrCxoBucket]
 
 
-class CxoByDimensionResponse(BaseModel):
-    data: list[CxoBucket]
-    meta: CxoMeta
+class HrCxoMetricDefinition(BaseModel):
+    """One entry in the definitions list — drives the frontend toggle buttons."""
+    key: str
+    label: str
