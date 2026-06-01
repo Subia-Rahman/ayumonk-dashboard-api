@@ -14,12 +14,39 @@ class ChallengeActionRequest(BaseModel):
     rating_value: int | None = Field(default=None, ge=0)
 
 
+class StreakInfo(BaseModel):
+    current_streak: int
+    longest_streak: int
+    last_completion_date: date
+    streak_status: str  # "new" | "incremented" | "reset" | "already_done"
+
+
+class XpInfo(BaseModel):
+    xp_earned_now: int
+    total_xp: int
+    xp_this_week: int
+    current_level: int
+    level_label: str
+    level_up: bool
+
+
+class BadgeInfo(BaseModel):
+    badge_key: str
+    label: str
+    icon: str
+    level: str
+
+
 class ChallengeActionResponse(BaseModel):
     message: str
     xp_earned: int
     status: str
     completion_date: date
     value_logged: int | None = None
+    streak: StreakInfo | None = None
+    xp: XpInfo | None = None
+    badge_earned: bool = False
+    badge: BadgeInfo | None = None
 
 
 class DashboardChallengeStatus(BaseModel):
