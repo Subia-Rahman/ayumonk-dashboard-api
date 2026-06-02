@@ -43,5 +43,7 @@ class KPIScoringRepository:
         )
         if company_id is not None:
             stmt = stmt.where(KPIScoring.company_id == company_id)
+        # (question_id, option_text) is not enforced unique; tolerate duplicates.
+        stmt = stmt.order_by(KPIScoring.option_number.asc()).limit(1)
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().first()

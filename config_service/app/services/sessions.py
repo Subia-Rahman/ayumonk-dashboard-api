@@ -37,6 +37,8 @@ from config_service.app.services.employee_form import EmployeeFormService
 from config_service.app.repositories.employee_form import EmployeeFormRepository
 from config_service.app.repositories.kpi_questions import KPIQuestionRepository
 from config_service.app.repositories.kpi_scoring import KPIScoringRepository
+from config_service.app.models.employee_form_answer import EmployeeFormAnswer
+from config_service.app.models.employee_form_response import EmployeeFormResponse
 from config_service.app.models.session_question import SessionQuestion
 from config_service.app.models.kpi_suggestion_mapping import KPISuggestionMapping
 from config_service.app.models.suggestion import Suggestion
@@ -452,30 +454,59 @@ class SessionService:
         questions = await self.session_repo.get_questions_by_ids(list(allowed_question_ids))
         question_by_id = {q.id: q for q in questions}
 
+        db = self.session_repo.db
+        form_repo = EmployeeFormRepository(db)
+        scoring_repo = KPIScoringRepository(db)
+
         response_id = str(uuid4())
-        form_data = {
+        company_id = self._resolve_company_id(session)
+        form_id = str(session.id)
+        submitted_at = datetime.utcnow()
+
+        raw_form_data = {
             "email": payload.email,
             "response_id": response_id,
         }
+        for answer in payload.answers:
+            question = question_by_id.get(answer.question_id)
+            if not question:
+                continue
+            raw_form_data[question.question_text] = answer.selected_option
+
+        raw_payload = {
+            "company_id": company_id,
+            "form_id": form_id,
+            "form_data": raw_form_data,
+        }
+
+        await form_repo.deactivate_previous_responses(email=payload.email, form_id=form_id)
+        await form_repo.create_response(
+            EmployeeFormResponse(
+                company_id=company_id,
+                employee_email=payload.email,
+                response_id=response_id,
+                submitted_at=submitted_at,
+                raw_payload=raw_payload,
+                form_id=form_id,
+            )
+        )
 
         for answer in payload.answers:
             question = question_by_id.get(answer.question_id)
             if not question:
                 continue
-            form_data[question.question_text] = answer.selected_option
-
-        form_payload = {
-            "company_id": self._resolve_company_id(session),
-            "form_id": str(session.id),
-            "form_data": form_data,
-        }
-
-        svc = EmployeeFormService(
-            EmployeeFormRepository(self.session_repo.db),
-            KPIQuestionRepository(self.session_repo.db),
-            KPIScoringRepository(self.session_repo.db),
-        )
-        await svc.process_submission(form_payload)
+            scoring = await scoring_repo.get_by_question_id_and_option(
+                question.id, answer.selected_option
+            )
+            score = scoring.score if scoring else 0
+            await form_repo.create_answer(
+                EmployeeFormAnswer(
+                    response_id=response_id,
+                    question_code=question.question_code,
+                    selected_option=answer.selected_option,
+                    score=score,
+                )
+            )
 
         return SessionFormSubmissionResponse(response_id=response_id)
 

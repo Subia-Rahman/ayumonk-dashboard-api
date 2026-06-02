@@ -21,8 +21,10 @@ class KPIQuestionRepository:
         stmt = select(KPIQuestion).where(KPIQuestion.question_text == question_text)
         if company_id is not None:
             stmt = stmt.where(KPIQuestion.company_id == company_id)
+        # question_text is not unique; tolerate duplicates by taking the first match.
+        stmt = stmt.order_by(KPIQuestion.created_at.asc()).limit(1)
         result = await self.db.execute(stmt)
-        return result.scalar_one_or_none()
+        return result.scalars().first()
 
     async def create(self, obj: KPIQuestion) -> KPIQuestion:
         self.db.add(obj)
