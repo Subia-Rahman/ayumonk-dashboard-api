@@ -19,6 +19,8 @@ from config_service.app.schemas.challenge_actions import (
 from config_service.app.services.challenge_actions import ChallengeActionService
 from config_service.app.schemas.badges import MyBadgesResponse
 from config_service.app.services.badges import BadgesService
+from config_service.app.schemas.leaderboard import WeeklyLeaderboardResponse
+from config_service.app.services.leaderboard import LeaderboardService
 from config_service.app.core.cxo_metrics_dependencies import (
     CxoAccessContext,
     require_cxo_dashboard_access,
@@ -114,6 +116,36 @@ async def mark_challenge_action(
     except Exception:
         logger.exception("ERROR | mark_challenge_action | user_id=%s", current_user.user_id)
         return error_response(message="Failed to mark challenge action", status_code=500)
+
+
+@router.get("/leaderboard", response_model=APIResponse[WeeklyLeaderboardResponse])
+async def get_weekly_leaderboard(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Weekly Challenges-tab leaderboard for the requesting employee's company.
+    Ranking is on `user_xp.xp_this_week` (Mon-Sun, reset by pg_cron); the
+    `+42%`-style delta is computed against last week's XP summed from
+    `user_challenge_completions`. company_id is taken from the JWT (never the
+    query/body) so a caller can never read another tenant's board.
+    """
+    logger.info("REQUEST | get_weekly_leaderboard | user_id=%s", current_user.user_id)
+    db.info["user_id"] = current_user.user_id
+
+    try:
+        service = LeaderboardService(db)
+        result = await service.get_weekly_leaderboard(
+            user_id=current_user.user_id,
+            company_id=current_user.tenant_id,
+        )
+        return success_response(data=result, message="Leaderboard fetched successfully")
+    except BusinessException as e:
+        logger.warning("BUSINESS_ERROR | get_weekly_leaderboard | %s", e.message)
+        return error_response(message=e.message, status_code=e.status_code, errors=e.errors)
+    except Exception:
+        logger.exception("ERROR | get_weekly_leaderboard | user_id=%s", current_user.user_id)
+        return error_response(message="Failed to fetch leaderboard", status_code=500)
 
 
 @router.get("/me/badges", response_model=APIResponse[MyBadgesResponse])

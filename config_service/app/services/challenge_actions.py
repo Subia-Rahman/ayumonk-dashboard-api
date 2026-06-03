@@ -543,7 +543,14 @@ class ChallengeActionService:
     @staticmethod
     def _normalize_value(challenge_type: str | None, payload: ChallengeActionRequest) -> int | None:
         ctype = (challenge_type or "").lower()
-        if ctype in ("counter", "timer", "rating"):
+        # Counter taps are server-controlled at +1 per call. Any value_logged
+        # in the request is ignored so a client that sends a cumulative tap
+        # count (or any other value) cannot over-complete the challenge.
+        # First tap stores 1; subsequent taps in the same day add 1 each via
+        # the counter-accumulation branch in mark_challenge_done.
+        if ctype == "counter":
+            return 1
+        if ctype in ("timer", "rating"):
             if ctype == "timer" and payload.timer_seconds is not None:
                 return payload.timer_seconds
             if ctype == "rating" and payload.rating_value is not None:
