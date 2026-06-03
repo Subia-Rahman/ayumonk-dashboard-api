@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta
 
-from sqlalchemy import or_, select
+from sqlalchemy import distinct, func, or_, select
 
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.badge_master import BadgeMaster
@@ -110,6 +110,17 @@ class ChallengeActionService:
 
             xp_state = await self._update_user_xp(user_id, delta_xp)
 
+            # Counter accumulation: streak + KPI-completion already counted
+            # on the first submission of the day. Level badges can still fire
+            # if a partial submission pushes the user across a level threshold.
+            badge_earned, badge_info = await self._award_badges(
+                user_id=user_id,
+                challenge_id=payload.challenge_id,
+                current_streak=None,
+                new_level=xp_state["current_level"] if xp_state["level_up"] else None,
+                count_kpi_completion=False,
+            )
+
             await self.db.commit()
 
             return ChallengeActionResponse(
@@ -124,8 +135,8 @@ class ChallengeActionService:
                 value_logged=existing.value_logged,
                 streak=None,
                 xp=XpInfo(**xp_state),
-                badge_earned=False,
-                badge=None,
+                badge_earned=badge_earned,
+                badge=BadgeInfo(**badge_info) if badge_info else None,
             )
 
         if existing:
@@ -163,14 +174,18 @@ class ChallengeActionService:
         # F — XP aggregate update (always, including for rating type).
         xp_state = await self._update_user_xp(user_id, xp_earned)
 
-        # G — Badge check (only for streak-eligible types with an active streak).
-        badge_earned = False
-        badge_info = None
-        if streak_result and streak_result["current_streak"] > 0:
-            badge_earned, badge_info = await self._check_and_award_badge(
-                user_id=user_id,
-                current_streak=streak_result["current_streak"],
-            )
+        # G — Badge check. Three trigger types fire here:
+        #   * streak — only for streak-eligible types that just advanced
+        #   * kpi_completions — for any non-skipped completion (rating counts:
+        #     mood-logging still represents engagement with that KPI)
+        #   * level — whenever XP just pushed the user up a level
+        badge_earned, badge_info = await self._award_badges(
+            user_id=user_id,
+            challenge_id=payload.challenge_id,
+            current_streak=streak_result["current_streak"] if streak_result else None,
+            new_level=xp_state["current_level"] if xp_state["level_up"] else None,
+            count_kpi_completion=(status != "skipped"),
+        )
 
         await self.db.commit()
 
@@ -315,35 +330,131 @@ class ChallengeActionService:
             "level_up": level_up,
         }
 
-    async def _check_and_award_badge(self, *, user_id: int, current_streak: int):
-        stmt = select(BadgeMaster).where(
-            BadgeMaster.trigger_type == "streak",
-            BadgeMaster.trigger_value == current_streak,
-            BadgeMaster.is_active == True,     # noqa: E712
-            BadgeMaster.is_deleted == False,   # noqa: E712
-        )
-        res = await self.db.execute(stmt)
-        badge = res.scalar_one_or_none()
-        if not badge:
-            return False, None
+    async def _award_badges(
+        self,
+        *,
+        user_id: int,
+        challenge_id,
+        current_streak: int | None,
+        new_level: int | None,
+        count_kpi_completion: bool,
+    ) -> tuple[bool, dict | None]:
+        """
+        Evaluate all badge trigger types for this completion and insert any
+        newly-earned user_badges rows. Returns (earned_any, headline_badge)
+        where headline_badge is the highest-trigger_value award (most realistic
+        UX: a single completion almost never hits two milestones at once, but
+        if it does we surface the bigger one).
+        """
+        kpi_key = await self._kpi_for_challenge(challenge_id)
+        awarded: list[tuple[int, dict]] = []
 
-        already_stmt = select(UserBadge.id).where(
-            UserBadge.user_id == user_id,
-            UserBadge.badge_id == badge.id,
-        )
-        already_res = await self.db.execute(already_stmt)
-        if already_res.first() is not None:
-            return False, None
+        # --- streak ----------------------------------------------------------
+        if current_streak and current_streak > 0:
+            stmt = select(BadgeMaster).where(
+                BadgeMaster.trigger_type == "streak",
+                BadgeMaster.trigger_value == current_streak,
+                or_(BadgeMaster.kpi_key.is_(None), BadgeMaster.kpi_key == kpi_key),
+                BadgeMaster.is_active == True,     # noqa: E712
+                BadgeMaster.is_deleted == False,   # noqa: E712
+            )
+            for badge in (await self.db.execute(stmt)).scalars().all():
+                if await self._award_if_new(user_id, badge):
+                    awarded.append((badge.trigger_value, self._badge_dict(badge)))
 
+        # --- kpi_completions -------------------------------------------------
+        if count_kpi_completion and kpi_key is not None:
+            kpi_count = await self._count_user_completions_in_kpi(user_id, kpi_key)
+            stmt = select(BadgeMaster).where(
+                BadgeMaster.trigger_type == "kpi_completions",
+                BadgeMaster.kpi_key == kpi_key,
+                BadgeMaster.trigger_value <= kpi_count,
+                BadgeMaster.is_active == True,     # noqa: E712
+                BadgeMaster.is_deleted == False,   # noqa: E712
+            )
+            for badge in (await self.db.execute(stmt)).scalars().all():
+                if await self._award_if_new(user_id, badge):
+                    awarded.append((badge.trigger_value, self._badge_dict(badge)))
+
+        # --- level -----------------------------------------------------------
+        if new_level is not None:
+            stmt = select(BadgeMaster).where(
+                BadgeMaster.trigger_type == "level",
+                BadgeMaster.trigger_value <= new_level,
+                BadgeMaster.kpi_key.is_(None),
+                BadgeMaster.is_active == True,     # noqa: E712
+                BadgeMaster.is_deleted == False,   # noqa: E712
+            )
+            for badge in (await self.db.execute(stmt)).scalars().all():
+                if await self._award_if_new(user_id, badge):
+                    awarded.append((badge.trigger_value, self._badge_dict(badge)))
+
+        if not awarded:
+            return False, None
+        return True, max(awarded, key=lambda x: x[0])[1]
+
+    async def _award_if_new(self, user_id: int, badge: BadgeMaster) -> bool:
+        existing = await self.db.execute(
+            select(UserBadge.id).where(
+                UserBadge.user_id == user_id,
+                UserBadge.badge_id == badge.id,
+            )
+        )
+        if existing.first() is not None:
+            return False
         self.db.add(UserBadge(user_id=user_id, badge_id=badge.id))
         await self.db.flush()
+        return True
 
-        return True, {
+    @staticmethod
+    def _badge_dict(badge: BadgeMaster) -> dict:
+        return {
             "badge_key": badge.badge_key,
             "label": badge.label,
             "icon": badge.icon,
             "level": badge.level,
         }
+
+    async def _kpi_for_challenge(self, challenge_id):
+        """Resolve the KPI of the active kpi_challenges mapping for this
+        challenge today. Returns None if no active mapping exists (e.g. the
+        caller already checked the window guard so this is just a re-read)."""
+        today = datetime.utcnow().date()
+        stmt = (
+            select(KPIChallenge.kpi_key)
+            .where(
+                KPIChallenge.challenge_key == challenge_id,
+                KPIChallenge.is_deleted == False,  # noqa: E712
+                KPIChallenge.is_active == True,    # noqa: E712
+                KPIChallenge.start_date <= today,
+                or_(KPIChallenge.end_date.is_(None), KPIChallenge.end_date >= today),
+            )
+            .limit(1)
+        )
+        res = await self.db.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def _count_user_completions_in_kpi(self, user_id: int, kpi_key) -> int:
+        """Count distinct completion rows for this user across all challenges
+        currently or previously mapped to the given KPI. A challenge mapped to
+        multiple KPIs counts once per (user, kpi) — distinct on completion.id
+        avoids double-counting if the kpi_challenges join multiplies rows."""
+        stmt = (
+            select(func.count(distinct(UserChallengeCompletion.id)))
+            .select_from(UserChallengeCompletion)
+            .join(
+                KPIChallenge,
+                KPIChallenge.challenge_key == UserChallengeCompletion.challenge_id,
+            )
+            .where(
+                UserChallengeCompletion.user_id == user_id,
+                UserChallengeCompletion.is_deleted == False,  # noqa: E712
+                KPIChallenge.kpi_key == kpi_key,
+                KPIChallenge.is_deleted == False,  # noqa: E712
+            )
+        )
+        res = await self.db.execute(stmt)
+        return res.scalar_one() or 0
 
     @staticmethod
     def _compute_level(total_xp: int) -> tuple[int, str]:

@@ -1,6 +1,6 @@
 import uuid
 
-from sqlalchemy import Column, Integer, SmallInteger, String, UniqueConstraint
+from sqlalchemy import Column, ForeignKey, Integer, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 
 from config_service.app.core.audit.mixin import AuditMixin
@@ -17,7 +17,18 @@ class BadgeMaster(Base, AuditMixin):
     level = Column(String(20), nullable=False)
     trigger_type = Column(String(20), nullable=False)
     trigger_value = Column(Integer, nullable=False)
+    # NULL = global badge (e.g. streak milestone, level cap). Non-NULL =
+    # KPI-scoped (e.g. Hydration Hero Bronze fires only for Hydration KPI).
+    kpi_key = Column(UUID(as_uuid=True), ForeignKey("kpis.kpi_key"), nullable=True)
 
     __table_args__ = (
-        UniqueConstraint("trigger_type", "trigger_value", name="uq_badges_master_trigger"),
+        # The DB constraint is NULLS NOT DISTINCT (Postgres 15+). SQLAlchemy
+        # treats this as informational only; the actual uniqueness is enforced
+        # by the migration.
+        UniqueConstraint(
+            "trigger_type",
+            "trigger_value",
+            "kpi_key",
+            name="uq_badges_master_trigger_scoped",
+        ),
     )

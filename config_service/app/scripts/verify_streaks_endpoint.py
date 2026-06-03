@@ -20,7 +20,7 @@ from sqlalchemy import delete, text
 
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.db import AsyncSessionLocal
-from config_service.app.models.badge_master import BadgeMaster  # noqa: F401
+from config_service.app.models.badge_master import BadgeMaster
 from config_service.app.models.challenge import Challenge
 from config_service.app.models.kpi import KPI
 from config_service.app.models.kpi_challenge import KPIChallenge
@@ -105,6 +105,8 @@ async def teardown_fixtures(db, challenge_keys: list[uuid.UUID]):
     await db.execute(text(f"DELETE FROM challenges WHERE challenge_key IN ({keys_csv})"))
     await db.execute(text("DELETE FROM user_badges WHERE user_id = :u"), {"u": TEST_USER_ID})
     await db.execute(text("DELETE FROM user_xp WHERE user_id = :u"), {"u": TEST_USER_ID})
+    await db.execute(text("DELETE FROM user_badges WHERE badge_id IN (SELECT id FROM badges_master WHERE badge_key LIKE 'VTEST_%')"))
+    await db.execute(text("DELETE FROM badges_master WHERE badge_key LIKE 'VTEST_%'"))
     await db.commit()
 
 
@@ -328,6 +330,65 @@ async def run_tests() -> tuple[int, int, list[tuple[str, str, str]]]:
     ok = ok and completions == 0 and streak_row is None
     results.append(("Test 7 inactive KPI window blocked", stamp(ok),
                     f"err='{msg}', completions={completions}, streak={streak_row}"))
+
+    # =========================================================================
+    # Test 9 — KPI-scoped badge fires when the user's completion count for a
+    # KPI crosses the badge's trigger_value.
+    #
+    # Seed a test badge: ("VTEST_KPI_BRONZE", trigger_type='kpi_completions',
+    # trigger_value=3, kpi_key=TEST_KPI_KEY). Then complete 3 different
+    # challenges in that KPI — the 3rd completion should award the badge.
+    # =========================================================================
+    async with AsyncSessionLocal() as db:
+        await reset_user_state(db, all_challenge_keys)
+        # Wipe any prior VTEST badges so the seed is unique
+        await db.execute(text("DELETE FROM user_badges WHERE badge_id IN (SELECT id FROM badges_master WHERE badge_key LIKE 'VTEST_%')"))
+        await db.execute(text("DELETE FROM badges_master WHERE badge_key LIKE 'VTEST_%'"))
+        db.add(BadgeMaster(
+            badge_key="VTEST_KPI_BRONZE",
+            label="VTest KPI Bronze",
+            icon="medal",
+            level="bronze",
+            trigger_type="kpi_completions",
+            trigger_value=3,
+            kpi_key=TEST_KPI_KEY,
+        ))
+        await db.commit()
+
+    # All 6 VTEST challenges share TEST_KPI_KEY via their kpi_challenges row.
+    # Complete three distinct streak-eligible challenges in that KPI today.
+    res1 = await call(ck_toggle, toggle_value=True)
+    res2 = await call(ck_choice, choice_value=1)
+    res3 = await call(ck_timer, timer_seconds=120)
+    ok = (
+        res1.badge is None
+        and res2.badge is None
+        and res3.badge is not None
+        and res3.badge.badge_key == "VTEST_KPI_BRONZE"
+        and res3.badge_earned is True
+    )
+    results.append(("Test 9 KPI completion threshold awards VTEST_KPI_BRONZE", stamp(ok),
+                    f"r1.badge={res1.badge_earned}, r2.badge={res2.badge_earned}, r3.badge={res3.badge.badge_key if res3.badge else None}"))
+
+    # =========================================================================
+    # Test 10 — Level badge fires when XP pushes the user up to Level 6.
+    # Seed total_xp = 1999, earn 25 from a toggle → 2024 → Level 6 → "LEVEL_6"
+    # (Banyan Legend) badge awarded.
+    # =========================================================================
+    async with AsyncSessionLocal() as db:
+        await reset_user_state(db, all_challenge_keys)
+    await force_xp(1999)
+    res = await call(ck_toggle, toggle_value=True)
+    ok = (
+        res.xp is not None
+        and res.xp.level_up is True
+        and res.xp.current_level == 6
+        and res.badge_earned is True
+        and res.badge is not None
+        and res.badge.badge_key == "LEVEL_6"
+    )
+    results.append(("Test 10 level-up to 6 awards LEVEL_6 (Banyan Legend)", stamp(ok),
+                    f"level={res.xp.current_level if res.xp else None}, badge={res.badge.badge_key if res.badge else None}"))
 
     # =========================================================================
     # Test 8 — level up at 100 XP boundary

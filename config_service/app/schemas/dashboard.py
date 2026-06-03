@@ -16,6 +16,8 @@ class KPIChallengeBrief(BaseModel):
     is_active: bool | None = None
     start_date: date
     end_date: date | None = None
+    is_completed_today: bool = False
+    value_logged_today: int | None = None
 
 
 class KPIDashboardCard(BaseModel):

@@ -68,7 +68,7 @@ DEFAULT_POLICIES: list[dict] = [
 DEFAULT_ROLE_MENUS: dict[str, list[dict]] = {
     "Company Admin": [
         {"menu_slug": "dashboard", "access_level": "view"},
-        {"menu_slug": "company-data", "access_level": "full"},
+        {"menu_slug": "company-data", "access_level": "view"},
         {"menu_slug": "company-users", "access_level": "full"},
         {"menu_slug": "kpis", "access_level": "full"},
         {"menu_slug": "profile", "access_level": "full"},

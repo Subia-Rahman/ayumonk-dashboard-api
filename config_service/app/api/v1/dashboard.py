@@ -17,6 +17,8 @@ from config_service.app.schemas.challenge_actions import (
     ChallengeActionResponse,
 )
 from config_service.app.services.challenge_actions import ChallengeActionService
+from config_service.app.schemas.badges import MyBadgesResponse
+from config_service.app.services.badges import BadgesService
 from config_service.app.core.cxo_metrics_dependencies import (
     CxoAccessContext,
     require_cxo_dashboard_access,
@@ -44,7 +46,7 @@ async def get_kpi_dashboard(
 
     try:
         service = DashboardService(db)
-        result = await service.get_kpi_cards(current_user.email)
+        result = await service.get_kpi_cards(current_user.email, user_id=current_user.user_id)
         return success_response(data=result, message="KPI dashboard fetched successfully")
     except Exception:
         logger.exception("ERROR | get_kpi_dashboard | user_id=%s", current_user.user_id)
@@ -112,6 +114,34 @@ async def mark_challenge_action(
     except Exception:
         logger.exception("ERROR | mark_challenge_action | user_id=%s", current_user.user_id)
         return error_response(message="Failed to mark challenge action", status_code=500)
+
+
+@router.get("/me/badges", response_model=APIResponse[MyBadgesResponse])
+async def get_my_badges(
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Returns every badge visible to the current user (global + own-company KPI
+    badges) with earned/locked status, so the UI can render the badge cabinet
+    with greyed-out tiles for locked badges.
+    """
+    logger.info("REQUEST | get_my_badges | user_id=%s", current_user.user_id)
+    db.info["user_id"] = current_user.user_id
+
+    try:
+        service = BadgesService(db)
+        result = await service.list_for_user(
+            user_id=current_user.user_id,
+            user_email=current_user.email,
+        )
+        return success_response(data=result, message="Badges fetched successfully")
+    except BusinessException as e:
+        logger.warning("BUSINESS_ERROR | get_my_badges | %s", e.message)
+        return error_response(message=e.message, status_code=e.status_code, errors=e.errors)
+    except Exception:
+        logger.exception("ERROR | get_my_badges | user_id=%s", current_user.user_id)
+        return error_response(message="Failed to fetch badges", status_code=500)
 
 
 # -----------------------------------------------------------------------------
