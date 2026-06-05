@@ -97,6 +97,7 @@ class DashboardService:
                         xp_reward=challenge.xp_reward,
                         is_daily=challenge.is_daily,
                         is_active=challenge.is_active,
+                        options=challenge.options,
                         start_date=mapping.start_date,
                         end_date=mapping.end_date,
                         is_completed_today=is_completed_today,

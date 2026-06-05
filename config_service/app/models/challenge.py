@@ -1,7 +1,7 @@
 import uuid
 
 from sqlalchemy import Boolean, Column, ForeignKey, Integer, SmallInteger, String, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from config_service.app.core.audit.mixin import AuditMixin
 from config_service.app.core.db import Base
@@ -19,3 +19,6 @@ class Challenge(Base, AuditMixin):
     xp_reward = Column(SmallInteger, nullable=False, default=20)
     icon = Column(String(50), nullable=True)
     is_daily = Column(Boolean, nullable=False, default=True)
+    # JSON array of option labels. Required for `multi` and `choice` types;
+    # NULL for all other types.
+    options = Column(JSONB, nullable=True)

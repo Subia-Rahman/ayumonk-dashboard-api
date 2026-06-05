@@ -39,6 +39,7 @@ class ChallengeService:
                 xp_reward=payload.xp_reward,
                 icon=payload.icon,
                 is_daily=payload.is_daily,
+                options=payload.options,
             )
         )
 
@@ -140,6 +141,25 @@ class ChallengeService:
             challenge.is_daily = payload.is_daily
         if payload.is_active is not None:
             challenge.is_active = payload.is_active
+        if payload.options is not None:
+            challenge.options = payload.options
+
+        # Final type/field consistency pass. The resolved type may be from the
+        # payload or the unchanged DB value; either way we keep target_value
+        # NULL for toggle/rating and require options for multi/choice.
+        effective_type = (challenge.challenge_type or "").lower()
+        if effective_type in {"toggle", "rating"}:
+            challenge.target_value = None
+            challenge.options = None
+        elif effective_type in {"multi", "choice"}:
+            if not challenge.options:
+                raise BusinessException(
+                    message=f"options is required for '{effective_type}' challenges",
+                    status_code=422,
+                )
+        else:
+            # Counter/timer never carry options.
+            challenge.options = None
 
         challenge = await self.challenge_repo.update(challenge)
         mappings = await self.kpi_challenge_repo.list_by_challenge(challenge_key)
@@ -207,6 +227,7 @@ class ChallengeService:
                     xp_reward=challenge.xp_reward,
                     icon=challenge.icon,
                     is_daily=challenge.is_daily,
+                    options=challenge.options,
                     start_date=mapping.start_date,
                     end_date=mapping.end_date,
                 )
@@ -261,6 +282,7 @@ class ChallengeService:
             icon=challenge.icon,
             is_daily=challenge.is_daily,
             is_active=bool(challenge.is_active),
+            options=challenge.options,
             start_date=start_date,
             end_date=end_date,
             kpi_keys=kpi_keys or [],

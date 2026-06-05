@@ -14,6 +14,7 @@ class KPIChallengeBrief(BaseModel):
     xp_reward: int | None = None
     is_daily: bool | None = None
     is_active: bool | None = None
+    options: list[str] | None = None
     start_date: date
     end_date: date | None = None
     is_completed_today: bool = False

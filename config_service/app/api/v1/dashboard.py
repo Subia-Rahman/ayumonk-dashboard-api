@@ -15,6 +15,8 @@ from pydantic import ValidationError
 from config_service.app.schemas.challenge_actions import (
     ChallengeActionRequest,
     ChallengeActionResponse,
+    ChallengeUndoRequest,
+    ChallengeUndoResponse,
 )
 from config_service.app.services.challenge_actions import ChallengeActionService
 from config_service.app.schemas.badges import MyBadgesResponse
@@ -116,6 +118,45 @@ async def mark_challenge_action(
     except Exception:
         logger.exception("ERROR | mark_challenge_action | user_id=%s", current_user.user_id)
         return error_response(message="Failed to mark challenge action", status_code=500)
+
+
+@router.post("/challenges/undo", response_model=APIResponse[ChallengeUndoResponse])
+async def undo_challenge_action(
+    payload: ChallengeUndoRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(get_current_user),
+):
+    """
+    Undo today's completion for a toggle-type challenge. Soft-deletes the
+    UserChallengeCompletion row, deducts the XP that was awarded, and rewinds
+    the streak by one day (last_completion_date moves back; longest_streak is
+    preserved). Only `toggle` is supported — counter/timer/multi/choice/rating
+    have no "uncheck" UX.
+    """
+    logger.info(
+        "REQUEST | undo_challenge_action | user_id=%s | challenge_id=%s",
+        current_user.user_id,
+        str(payload.challenge_id),
+    )
+    db.info["user_id"] = current_user.user_id
+
+    try:
+        service = ChallengeActionService(db)
+        result = await service.undo_toggle(
+            user_id=current_user.user_id,
+            user_email=current_user.email,
+            challenge_id=payload.challenge_id,
+        )
+        return success_response(data=result, message=result.message)
+    except BusinessException as e:
+        logger.warning("BUSINESS_ERROR | undo_challenge_action | %s", e.message)
+        return error_response(message=e.message, status_code=e.status_code, errors=e.errors)
+    except ValidationError as e:
+        logger.warning("VALIDATION_ERROR | undo_challenge_action | %s", e.errors())
+        return error_response(message="Invalid undo payload", status_code=422, errors=e.errors())
+    except Exception:
+        logger.exception("ERROR | undo_challenge_action | user_id=%s", current_user.user_id)
+        return error_response(message="Failed to undo challenge action", status_code=500)
 
 
 @router.get("/leaderboard", response_model=APIResponse[WeeklyLeaderboardResponse])

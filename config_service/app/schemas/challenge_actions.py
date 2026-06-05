@@ -49,6 +49,19 @@ class ChallengeActionResponse(BaseModel):
     badge: BadgeInfo | None = None
 
 
+class ChallengeUndoRequest(BaseModel):
+    challenge_id: UUID
+
+
+class ChallengeUndoResponse(BaseModel):
+    message: str
+    challenge_id: UUID
+    completion_date: date
+    xp_deducted: int
+    xp: XpInfo | None = None
+    streak: StreakInfo | None = None
+
+
 class DashboardChallengeStatus(BaseModel):
     challenge_id: UUID
     title: str

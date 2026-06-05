@@ -17,6 +17,7 @@ from config_service.app.schemas.challenge_actions import (
     BadgeInfo,
     ChallengeActionRequest,
     ChallengeActionResponse,
+    ChallengeUndoResponse,
     DashboardChallengeStatus,
     DashboardChallengesResponse,
     StreakInfo,
@@ -77,7 +78,7 @@ class ChallengeActionService:
         is_rating = challenge_type == "rating"
         is_streak_eligible = challenge_type in _STREAK_ELIGIBLE_TYPES
 
-        value_logged = self._normalize_value(challenge.challenge_type, payload)
+        value_logged = self._normalize_value(challenge, payload)
         target = challenge.target_value
 
         existing = await self.completion_repo.get_by_user_challenge_date(
@@ -206,6 +207,104 @@ class ChallengeActionService:
         )
 
     # -------------------------------------------------------------------------
+    # Undo (toggle-only) — soft-deletes today's completion and reverts XP/streak
+    # -------------------------------------------------------------------------
+
+    async def undo_toggle(
+        self,
+        *,
+        user_id: int,
+        user_email: str,
+        challenge_id,
+    ) -> ChallengeUndoResponse:
+        company_user = await self.company_user_repo.get_by_email(user_email)
+        if not company_user:
+            raise BusinessException(message="Company not found for user", status_code=403)
+
+        challenge = await self.challenge_repo.get_by_id(challenge_id)
+        if not challenge:
+            raise BusinessException(message="Challenge not found", status_code=404)
+
+        ctype = (challenge.challenge_type or "").lower()
+        if ctype != "toggle":
+            raise BusinessException(
+                message="Undo is only supported for toggle challenges",
+                status_code=400,
+            )
+
+        today = datetime.utcnow().date()
+        existing = await self.completion_repo.get_by_user_challenge_date(
+            user_id=user_id,
+            challenge_id=challenge_id,
+            completion_date=today,
+        )
+        if not existing:
+            raise BusinessException(
+                message="No completion to undo for this challenge today",
+                status_code=404,
+            )
+
+        xp_to_deduct = existing.xp_earned or 0
+
+        # Soft-delete the completion row so the dashboard reverts to "pending"
+        # and the user can re-toggle later in the same day if they choose.
+        existing.is_active = False
+        existing.is_deleted = True
+        existing.updated_at = datetime.utcnow()
+        self.db.add(existing)
+        await self.db.flush()
+
+        xp_state = await self._update_user_xp(user_id, -xp_to_deduct)
+
+        # Revert the streak increment if this completion bumped it today. We
+        # only need to touch the streak row when the toggle was the *most
+        # recent* contribution to the current streak.
+        streak_info = await self._revert_streak(
+            user_id=user_id,
+            challenge_id=challenge_id,
+            today=today,
+        )
+
+        await self.db.commit()
+
+        return ChallengeUndoResponse(
+            message="Challenge completion undone",
+            challenge_id=challenge_id,
+            completion_date=today,
+            xp_deducted=xp_to_deduct,
+            xp=XpInfo(**xp_state),
+            streak=StreakInfo(**streak_info) if streak_info else None,
+        )
+
+    async def _revert_streak(self, *, user_id, challenge_id, today) -> dict | None:
+        stmt = select(UserStreak).where(
+            UserStreak.user_id == user_id,
+            UserStreak.challenge_id == challenge_id,
+        )
+        res = await self.db.execute(stmt)
+        row = res.scalar_one_or_none()
+        if row is None or row.last_completion_date != today:
+            # Either no streak ever existed, or today's completion never
+            # advanced it — nothing to revert.
+            return None
+
+        new_current = max(0, (row.current_streak or 0) - 1)
+        row.current_streak = new_current
+        # Rewind last_completion_date so a re-toggle today acts like a fresh
+        # first-of-day completion. longest_streak is never decreased.
+        row.last_completion_date = (today - timedelta(days=1)) if new_current > 0 else None
+        row.updated_at = datetime.utcnow()
+        self.db.add(row)
+        await self.db.flush()
+
+        return {
+            "current_streak": row.current_streak,
+            "longest_streak": row.longest_streak,
+            "last_completion_date": row.last_completion_date or today,
+            "streak_status": "reverted",
+        }
+
+    # -------------------------------------------------------------------------
     # Internal helpers
     # -------------------------------------------------------------------------
 
@@ -288,11 +387,14 @@ class ChallengeActionService:
         row = res.scalar_one_or_none()
 
         if row is None:
-            level, label = self._compute_level(xp_delta)
+            # First-ever XP write — undo paths with no prior row should never
+            # create a negative aggregate.
+            starting = max(0, xp_delta)
+            level, label = self._compute_level(starting)
             row = UserXp(
                 user_id=user_id,
-                total_xp=xp_delta,
-                xp_this_week=xp_delta,
+                total_xp=starting,
+                xp_this_week=starting,
                 current_level=level,
                 level_label=label,
             )
@@ -304,18 +406,21 @@ class ChallengeActionService:
                 "xp_this_week": row.xp_this_week,
                 "current_level": row.current_level,
                 "level_label": row.level_label,
-                "level_up": level > 1,
+                "level_up": level > 1 and xp_delta > 0,
             }
 
         old_level = row.current_level or 1
-        row.total_xp = (row.total_xp or 0) + xp_delta
-        row.xp_this_week = (row.xp_this_week or 0) + xp_delta
+        # Clamp aggregates at 0 so an undo of more XP than the user currently
+        # holds (e.g. weekly reset crossed midnight) can't go negative.
+        row.total_xp = max(0, (row.total_xp or 0) + xp_delta)
+        row.xp_this_week = max(0, (row.xp_this_week or 0) + xp_delta)
 
         new_level, new_label = self._compute_level(row.total_xp)
         level_up = new_level > old_level
-        if level_up:
-            row.current_level = new_level
-            row.level_label = new_label
+        # Recompute level in both directions so an undo can drop the user
+        # back a tier if their total dips below the threshold.
+        row.current_level = new_level
+        row.level_label = new_label
 
         row.updated_at = datetime.utcnow()
         self.db.add(row)
@@ -541,8 +646,8 @@ class ChallengeActionService:
         return "done" if value >= target else "partial"
 
     @staticmethod
-    def _normalize_value(challenge_type: str | None, payload: ChallengeActionRequest) -> int | None:
-        ctype = (challenge_type or "").lower()
+    def _normalize_value(challenge, payload: ChallengeActionRequest) -> int | None:
+        ctype = (challenge.challenge_type or "").lower()
         # Counter taps are server-controlled at +1 per call. Any value_logged
         # in the request is ignored so a client that sends a cumulative tap
         # count (or any other value) cannot over-complete the challenge.
@@ -567,12 +672,37 @@ class ChallengeActionService:
         if ctype == "choice":
             if payload.choice_value is None:
                 raise BusinessException(message="choice_value is required for choice challenges", status_code=422)
+            # Bound-check against defined options if the admin has set them.
+            options = challenge.options or []
+            if options and not (0 <= payload.choice_value < len(options)):
+                raise BusinessException(
+                    message=f"choice_value must be between 0 and {len(options) - 1}",
+                    status_code=422,
+                )
             return payload.choice_value
 
         if ctype == "multi":
             if payload.multi_values is None:
                 raise BusinessException(message="multi_values are required for multi challenges", status_code=422)
-            return len(payload.multi_values)
+            # "Mark all that apply" — any non-empty subset of the defined
+            # options counts as a completion. The FE already blocks the empty
+            # case, but we mirror it here so a stray POST can't create a
+            # zero-value row.
+            unique = {int(v) for v in payload.multi_values}
+            if not unique:
+                raise BusinessException(
+                    message="Select at least one option to complete this challenge",
+                    status_code=422,
+                )
+            options = challenge.options or []
+            if options:
+                option_count = len(options)
+                if any(v < 0 or v >= option_count for v in unique):
+                    raise BusinessException(
+                        message=f"multi_values must be in range [0, {option_count - 1}]",
+                        status_code=422,
+                    )
+            return len(unique)
 
         # Fallback to value_logged if type is unknown
         return payload.value_logged
