@@ -1,3 +1,5 @@
+import logging
+
 from authentication_service.app.core.db import get_db
 from authentication_service.app.repositories.revoked_token_repo import (
     RevokedTokenRepository,
@@ -8,6 +10,9 @@ from fastapi import Depends, HTTPException, status
 from authentication_service.app.core.security import oauth2_scheme, verify_access_token
 
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+_logger = logging.getLogger(__name__)
 
 
 async def _enrich_with_company_user(db: AsyncSession, email: str) -> dict:
@@ -53,6 +58,19 @@ async def get_current_user(
     # they expire naturally within ACCESS_TOKEN_EXPIRE_MINUTES.
     jti = payload.get("jti")
     if jti and await RevokedTokenRepository(db).exists(jti):
+        # Diagnostic: log the rejected jti + iat so post-logout-then-relogin
+        # 401s can be traced to a stale-token-on-client issue. Each fresh
+        # login should produce a unique jti (uuid.uuid4 in
+        # create_access_token), so a hit here means the request is carrying
+        # the pre-logout token instead of the post-login one — check
+        # frontend localStorage / interceptors / open tabs.
+        _logger.warning(
+            "REVOKED_TOKEN_REJECT | user_id=%s | jti=%s | iat=%s | "
+            "Hint: this jti is in revoked_tokens. Client is sending an "
+            "old token; verify the login response's access_token is "
+            "replacing stored auth before the next request fires.",
+            user_id, jti, payload.get("iat"),
+        )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token has been revoked",

@@ -27,3 +27,7 @@ from .wellness_dimensions import (
     WellnessDimension,
     WellnessDimensionKpiMapping,
 )
+from .theme_submission_score import ThemeSubmissionScore
+from .user_mood_log import UserMoodLog
+from .user_suggestion_log import UserSuggestionLog
+from .reminder_log import ReminderLog

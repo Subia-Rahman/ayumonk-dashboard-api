@@ -10,7 +10,6 @@ callers (admin / hr / cxo) are forced onto their own tenant; platform admins
 must pass `company_id` explicitly via query param.
 """
 
-from datetime import date
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Query
@@ -27,7 +26,10 @@ from config_service.app.core.response import APIResponse
 from config_service.app.core.response_utils import error_response, success_response
 from config_service.app.schemas.hr_wellness_analytics import (
     DimensionChartBucket,
+    EmployeeCountResponse,
     GenderWellnessRow,
+    HeadcountBucket,
+    HeadcountResponse,
     HeatmapCell,
     HeatmapRow,
     HrCardValue,
@@ -35,6 +37,10 @@ from config_service.app.schemas.hr_wellness_analytics import (
     WellnessByDimensionResponse,
     WellnessDimensionToggle,
     WellnessHeatmapResponse,
+)
+from config_service.app.services.hr_filters import (
+    HrFilters,
+    hr_filters_from_query,
 )
 from config_service.app.services.hr_wellness_analytics import (
     HrWellnessAnalyticsService,
@@ -167,15 +173,18 @@ async def wellness_by_dimension(
             "Required for platform admins; ignored for company-tier callers."
         ),
     ),
+    filters: HrFilters = Depends(hr_filters_from_query),
     db: AsyncSession = Depends(get_db),
     access: CxoAccessContext = Depends(require_cxo_dashboard_access),
 ):
     logger.info(
-        "REQUEST | wellness_by_dimension | user_id=%s | role=%s | dimension=%s | company_id=%s",
+        "REQUEST | wellness_by_dimension | user_id=%s | role=%s | dimension=%s "
+        "| company_id=%s | filters=%s",
         access.current_user.user_id,
         access.resolved_role,
         dimension,
         company_id,
+        filters,
     )
     db.info["user_id"] = access.current_user.user_id
 
@@ -184,7 +193,9 @@ async def wellness_by_dimension(
             access=access, company_id_param=company_id
         )
         result = await HrWellnessAnalyticsService(db).wellness_by_dimension(
-            dimension=dimension, company_id=resolved_company_id
+            dimension=dimension,
+            company_id=resolved_company_id,
+            filters=filters,
         )
         return success_response(
             data=WellnessByDimensionResponse(
@@ -238,14 +249,17 @@ async def gender_wellness(
             "Required for platform admins; ignored for company-tier callers."
         ),
     ),
+    filters: HrFilters = Depends(hr_filters_from_query),
     db: AsyncSession = Depends(get_db),
     access: CxoAccessContext = Depends(require_cxo_dashboard_access),
 ):
     logger.info(
-        "REQUEST | gender_wellness | user_id=%s | role=%s | company_id=%s",
+        "REQUEST | gender_wellness | user_id=%s | role=%s | company_id=%s "
+        "| filters=%s",
         access.current_user.user_id,
         access.resolved_role,
         company_id,
+        filters,
     )
     db.info["user_id"] = access.current_user.user_id
 
@@ -255,7 +269,9 @@ async def gender_wellness(
         )
         rows = await HrWellnessAnalyticsService(
             db
-        ).gender_wellness_productivity(company_id=resolved_company_id)
+        ).gender_wellness_productivity(
+            company_id=resolved_company_id, filters=filters
+        )
         return success_response(
             data=[GenderWellnessRow(**row) for row in rows],
             message="Gender wellness fetched successfully",
@@ -297,48 +313,23 @@ async def gender_wellness(
     },
 )
 async def wellness_heatmap_location_department(
-    department: str | None = Query(
-        default=None,
-        description="Optional — restrict to employees in this department.",
-    ),
-    location: str | None = Query(
-        default=None,
-        description="Optional — restrict to employees in this location.",
-    ),
-    date_from: date | None = Query(
-        default=None,
-        description=(
-            "Optional — only submissions on or after this date are eligible "
-            "as the latest submission per employee."
-        ),
-    ),
-    date_to: date | None = Query(
-        default=None,
-        description=(
-            "Optional — only submissions on or before this date are eligible "
-            "as the latest submission per employee."
-        ),
-    ),
     company_id: UUID | None = Query(
         default=None,
         description=(
             "Required for platform admins; ignored for company-tier callers."
         ),
     ),
+    filters: HrFilters = Depends(hr_filters_from_query),
     db: AsyncSession = Depends(get_db),
     access: CxoAccessContext = Depends(require_cxo_dashboard_access),
 ):
     logger.info(
         "REQUEST | wellness_heatmap_loc_dept | user_id=%s | role=%s "
-        "| department=%s | location=%s | date_from=%s | date_to=%s "
-        "| company_id=%s",
+        "| company_id=%s | filters=%s",
         access.current_user.user_id,
         access.resolved_role,
-        department,
-        location,
-        date_from,
-        date_to,
         company_id,
+        filters,
     )
     db.info["user_id"] = access.current_user.user_id
 
@@ -350,10 +341,7 @@ async def wellness_heatmap_location_department(
             db
         ).wellness_heatmap_location_department(
             company_id=resolved_company_id,
-            department=department,
-            location=location,
-            date_from=date_from,
-            date_to=date_to,
+            filters=filters,
         )
         return success_response(
             data=WellnessHeatmapResponse(
@@ -408,37 +396,23 @@ async def wellness_heatmap_location_department(
     },
 )
 async def hr_summary_cards(
-    date_from: date | None = Query(
-        default=None,
-        description=(
-            "Optional — only submissions on or after this date are eligible "
-            "as the latest submission per employee."
-        ),
-    ),
-    date_to: date | None = Query(
-        default=None,
-        description=(
-            "Optional — only submissions on or before this date are eligible "
-            "as the latest submission per employee."
-        ),
-    ),
     company_id: UUID | None = Query(
         default=None,
         description=(
             "Required for platform admins; ignored for company-tier callers."
         ),
     ),
+    filters: HrFilters = Depends(hr_filters_from_query),
     db: AsyncSession = Depends(get_db),
     access: CxoAccessContext = Depends(require_cxo_dashboard_access),
 ):
     logger.info(
         "REQUEST | hr_summary_cards | user_id=%s | role=%s "
-        "| date_from=%s | date_to=%s | company_id=%s",
+        "| company_id=%s | filters=%s",
         access.current_user.user_id,
         access.resolved_role,
-        date_from,
-        date_to,
         company_id,
+        filters,
     )
     db.info["user_id"] = access.current_user.user_id
 
@@ -448,8 +422,7 @@ async def hr_summary_cards(
         )
         result = await HrWellnessAnalyticsService(db).summary_cards(
             company_id=resolved_company_id,
-            date_from=date_from,
-            date_to=date_to,
+            filters=filters,
         )
         return success_response(
             data=HrSummaryCardsResponse(
@@ -474,4 +447,151 @@ async def hr_summary_cards(
         )
         return error_response(
             message="Failed to fetch HR summary cards", status_code=500
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /hr/employee-count — filter-aware "X of Y employees" badge
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/employee-count",
+    response_model=APIResponse[EmployeeCountResponse],
+    summary="Filter-aware employee count for the HR Analytics filter strip",
+    description=(
+        "Returns both the unfiltered company headcount (`total`) and the "
+        "count after applying the seven shared HR Analytics filters "
+        "(`filtered`). The HR Analytics page renders these as "
+        "`{filtered} of {total} employees in scope` next to the filter "
+        "controls. Single round-trip via a COUNT(*) FILTER (...) so "
+        "response time stays sub-100ms regardless of company size."
+    ),
+    responses={
+        400: {"description": "company_id missing for a platform admin"},
+        403: {"description": "Caller cannot access HR analytics"},
+    },
+)
+async def hr_employee_count(
+    company_id: UUID | None = Query(
+        default=None,
+        description=(
+            "Required for platform admins; ignored for company-tier callers."
+        ),
+    ),
+    filters: HrFilters = Depends(hr_filters_from_query),
+    db: AsyncSession = Depends(get_db),
+    access: CxoAccessContext = Depends(require_cxo_dashboard_access),
+):
+    logger.info(
+        "REQUEST | hr_employee_count | user_id=%s | role=%s | company_id=%s "
+        "| filters=%s",
+        access.current_user.user_id,
+        access.resolved_role,
+        company_id,
+        filters,
+    )
+    db.info["user_id"] = access.current_user.user_id
+
+    try:
+        resolved_company_id = _resolve_company_id(
+            access=access, company_id_param=company_id
+        )
+        result = await HrWellnessAnalyticsService(db).employee_count(
+            company_id=resolved_company_id, filters=filters
+        )
+        return success_response(
+            data=EmployeeCountResponse(
+                total=result["total"], filtered=result["filtered"]
+            ),
+            message="Employee count fetched successfully",
+        )
+    except BusinessException as e:
+        logger.warning("BUSINESS_ERROR | hr_employee_count | %s", e.message)
+        return error_response(
+            message=e.message, status_code=e.status_code, errors=e.errors
+        )
+    except Exception:
+        logger.exception(
+            "ERROR | hr_employee_count | user_id=%s",
+            access.current_user.user_id,
+        )
+        return error_response(
+            message="Failed to fetch employee count", status_code=500
+        )
+
+
+# ---------------------------------------------------------------------------
+# GET /hr/headcount — per-dept + per-loc headcount (filter-narrowed)
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/headcount",
+    response_model=APIResponse[HeadcountResponse],
+    summary="Filter-narrowed headcount per department and per location",
+    description=(
+        "Returns the filtered headcount broken down by department and by "
+        "location. Used to size bubbles on the Wellness x Productivity "
+        "scatter plot (bubble area proportional to dept headcount) and "
+        "any other chart that needs to weight a series by headcount. "
+        "Departments / locations with zero filtered employees are "
+        "omitted from the response."
+    ),
+    responses={
+        400: {"description": "company_id missing for a platform admin"},
+        403: {"description": "Caller cannot access HR analytics"},
+    },
+)
+async def hr_headcount(
+    company_id: UUID | None = Query(
+        default=None,
+        description=(
+            "Required for platform admins; ignored for company-tier callers."
+        ),
+    ),
+    filters: HrFilters = Depends(hr_filters_from_query),
+    db: AsyncSession = Depends(get_db),
+    access: CxoAccessContext = Depends(require_cxo_dashboard_access),
+):
+    logger.info(
+        "REQUEST | hr_headcount | user_id=%s | role=%s | company_id=%s "
+        "| filters=%s",
+        access.current_user.user_id,
+        access.resolved_role,
+        company_id,
+        filters,
+    )
+    db.info["user_id"] = access.current_user.user_id
+
+    try:
+        resolved_company_id = _resolve_company_id(
+            access=access, company_id_param=company_id
+        )
+        result = await HrWellnessAnalyticsService(db).headcount(
+            company_id=resolved_company_id, filters=filters
+        )
+        return success_response(
+            data=HeadcountResponse(
+                by_department=[
+                    HeadcountBucket(**b) for b in result["by_department"]
+                ],
+                by_location=[
+                    HeadcountBucket(**b) for b in result["by_location"]
+                ],
+            ),
+            message="Headcount fetched successfully",
+        )
+    except BusinessException as e:
+        logger.warning("BUSINESS_ERROR | hr_headcount | %s", e.message)
+        return error_response(
+            message=e.message, status_code=e.status_code, errors=e.errors
+        )
+    except Exception:
+        logger.exception(
+            "ERROR | hr_headcount | user_id=%s",
+            access.current_user.user_id,
+        )
+        return error_response(
+            message="Failed to fetch headcount", status_code=500
         )

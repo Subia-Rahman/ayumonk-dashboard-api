@@ -5,6 +5,7 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from authentication_service.app.core.rbac import require_permission
+from config_service.app.core.audit_helper import safe_audit_log
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.db import get_db
@@ -90,6 +91,15 @@ async def create_badge(
     db.info["user_id"] = current_user.user_id
     try:
         result = await _service(db).create(payload)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=getattr(current_user, "tenant_id", None),
+            action="BADGE_CREATED",
+            entity="badges_master",
+            new_value=result.model_dump(),
+            logger=logger,
+        )
         return success_response(data=result, message="Badge created successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | create_badge | %s", e.message)
@@ -113,7 +123,18 @@ async def update_badge(
                 current_user.user_id, str(badge_id))
     db.info["user_id"] = current_user.user_id
     try:
+        before = await _service(db).get(badge_id)
         result = await _service(db).update(badge_id, payload)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=getattr(current_user, "tenant_id", None),
+            action="BADGE_UPDATED",
+            entity="badges_master",
+            old_value=before.model_dump(),
+            new_value=result.model_dump(),
+            logger=logger,
+        )
         return success_response(data=result, message="Badge updated successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | update_badge | %s", e.message)
@@ -136,7 +157,18 @@ async def delete_badge(
                 current_user.user_id, str(badge_id))
     db.info["user_id"] = current_user.user_id
     try:
+        before = await _service(db).get(badge_id)
         result = await _service(db).delete(badge_id)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=getattr(current_user, "tenant_id", None),
+            action="BADGE_DELETED",
+            entity="badges_master",
+            old_value=before.model_dump(),
+            new_value={"id": before.id, "is_active": False, "is_deleted": True},
+            logger=logger,
+        )
         return success_response(data=result, message="Badge deleted successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | delete_badge | %s", e.message)

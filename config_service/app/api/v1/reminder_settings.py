@@ -1,7 +1,8 @@
 from uuid import UUID
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import ValidationError
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from authentication_service.app.core.dependencies import get_current_user
@@ -11,11 +12,14 @@ from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.db import get_db
 from config_service.app.core.response import APIResponse
 from config_service.app.core.response_utils import error_response, success_response
+from config_service.app.models.reminder_log import ReminderLog
 from config_service.app.repositories.company_users import UserRepository
 from config_service.app.repositories.reminder_settings import (
     ReminderSettingsRepository,
 )
 from config_service.app.schemas.reminder_settings import (
+    ReminderLogEntry,
+    ReminderLogResponse,
     ReminderSettingsCreateRequest,
     ReminderSettingsResponse,
     ReminderSettingsSnoozeRequest,
@@ -189,3 +193,51 @@ async def clear_snooze(
     except Exception:
         logger.exception("ERROR | clear_snooze | user_id=%s", current_user.user_id)
         return error_response(message="Failed to clear snooze", status_code=500)
+
+
+@router.get("/log", response_model=APIResponse[ReminderLogResponse])
+async def list_reminder_log(
+    limit: int = Query(default=10, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+    current_user: TokenUser = Depends(get_current_user),
+):
+    """Returns the caller's recent reminder-send history — every
+    (type, channel) attempt the dispatcher has logged for them, most
+    recent first.
+
+    Powers the "Recent sends" panel on ReminderSettings.jsx — replaces
+    the hardcoded `REMINDER_HISTORY` mock with live data."""
+    logger.info(
+        "REQUEST | list_reminder_log | user_id=%s | limit=%s",
+        current_user.user_id, limit,
+    )
+    db.info["user_id"] = current_user.user_id
+
+    try:
+        user_id = await _resolve_user_id(current_user, db)
+        stmt = (
+            select(ReminderLog)
+            .where(
+                ReminderLog.user_id == user_id,
+                ReminderLog.is_deleted == False,  # noqa: E712
+            )
+            .order_by(ReminderLog.sent_at.desc())
+            .limit(limit)
+        )
+        rows = (await db.execute(stmt)).scalars().all()
+        return success_response(
+            data=ReminderLogResponse(
+                items=[ReminderLogEntry.model_validate(r) for r in rows]
+            ),
+            message="Reminder log fetched successfully",
+        )
+    except BusinessException as e:
+        logger.warning("BUSINESS_ERROR | list_reminder_log | %s", e.message)
+        return error_response(
+            message=e.message, status_code=e.status_code, errors=e.errors
+        )
+    except Exception:
+        logger.exception("ERROR | list_reminder_log | user_id=%s", current_user.user_id)
+        return error_response(
+            message="Failed to fetch reminder log", status_code=500
+        )

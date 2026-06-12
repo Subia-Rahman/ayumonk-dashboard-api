@@ -24,6 +24,10 @@ from config_service.app.schemas.cxo_metrics import (
     HrCxoMetricResponse,
 )
 from config_service.app.services.hr_cxo_metrics import HrCxoMetricsService
+from config_service.app.services.hr_filters import (
+    HrFilters,
+    hr_filters_from_query,
+)
 
 
 logger = get_file_logger(name="hr_analytics_api", prefix="hr_analytics_api")
@@ -82,15 +86,18 @@ async def get_cxo_metric(
             "Required for platform admins; ignored for company-tier callers."
         ),
     ),
+    filters: HrFilters = Depends(hr_filters_from_query),
     db: AsyncSession = Depends(get_db),
     access: CxoAccessContext = Depends(require_cxo_dashboard_access),
 ):
     logger.info(
-        "REQUEST | hr_cxo_metric | user_id=%s | role=%s | metric=%s | company_id=%s",
+        "REQUEST | hr_cxo_metric | user_id=%s | role=%s | metric=%s "
+        "| company_id=%s | filters=%s",
         access.current_user.user_id,
         access.resolved_role,
         metric,
         company_id,
+        filters,
     )
     db.info["user_id"] = access.current_user.user_id
 
@@ -99,7 +106,9 @@ async def get_cxo_metric(
             access=access, company_id_param=company_id
         )
         result = await HrCxoMetricsService(db).fetch_metric(
-            metric=metric, company_id=resolved_company_id
+            metric=metric,
+            company_id=resolved_company_id,
+            filters=filters,
         )
         return success_response(
             data=HrCxoMetricResponse(

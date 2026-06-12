@@ -11,6 +11,7 @@ from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.db import AsyncSessionLocal
 from config_service.app.models.company_users import CompanyUser
 from config_service.app.models.notification import Notification
+from config_service.app.models.reminder_log import ReminderLog
 from config_service.app.models.reminder_settings import ReminderSettings
 from config_service.app.repositories.notification import NotificationRepository
 from config_service.app.repositories.push_subscription import (
@@ -21,6 +22,13 @@ from config_service.app.repositories.reminder_settings import (
 )
 from config_service.app.services.email_client import EmailClient
 from config_service.app.services.push import send_push_notification
+from config_service.app.services.reminder_eligibility import (
+    company_has_new_program_opening_soon,
+    company_has_program_ending_soon,
+    resolve_auth_user_id_by_email,
+    user_has_incomplete_challenges_today,
+    user_streak_at_risk,
+)
 from config_service.app.services.reminder_settings import ReminderSettingsService
 
 
@@ -180,7 +188,14 @@ class ReminderDispatcher:
         slow SMTP call does not pin a connection from the shared pool any
         longer than necessary. Returns True on success, False on failure
         (errors are logged and never re-raised — one bad user shouldn't kill
-        the batch)."""
+        the batch).
+
+        Phase 6: before sending, narrows ``reminder_types`` to those that
+        pass per-type eligibility (e.g. drop ``program_ending`` when the
+        user's company has no programs ending soon). Then writes a
+        ``reminder_log`` row per type that actually fired so the
+        ReminderSettings "Recent sends" panel has a live data source.
+        """
         try:
             async with AsyncSessionLocal() as session:
                 user = await self._load_user(session, entity.user_id)
@@ -191,8 +206,44 @@ class ReminderDispatcher:
                     )
                     return False
 
-                await self._send(entity, user, reminder_types, session)
-                await self._record_notifications(session, entity, user)
+                # Eligibility filter — narrow the enabled-toggle list to
+                # types whose conditions are actually met right now. The
+                # mapping from internal field name to the human label
+                # used by _send / _collect_active_reminder_types is in
+                # _REMINDER_TYPE_LABELS so we can correlate both.
+                eligible_fields = await self._eligible_reminder_fields(
+                    session=session, entity=entity, user=user
+                )
+                if not eligible_fields:
+                    # Nothing to fire — still mark idempotency so we
+                    # don't re-check every minute today. Same row state
+                    # the old behaviour would land on after a no-op send.
+                    await session.execute(
+                        update(ReminderSettings)
+                        .where(ReminderSettings.id == entity.id)
+                        .values(last_dispatched_on=user_local_date)
+                    )
+                    await session.commit()
+                    return True
+
+                eligible_labels = [
+                    label
+                    for field, label in _REMINDER_TYPE_LABELS
+                    if field in eligible_fields
+                ]
+
+                send_result = await self._send(
+                    entity, user, eligible_labels, session
+                )
+                await self._record_notifications(
+                    session, entity, user, eligible_fields=eligible_fields
+                )
+                self._record_reminder_log(
+                    session=session,
+                    user=user,
+                    eligible_fields=eligible_fields,
+                    send_result=send_result,
+                )
                 await session.execute(
                     update(ReminderSettings)
                     .where(ReminderSettings.id == entity.id)
@@ -205,6 +256,119 @@ class ReminderDispatcher:
                 "Failed to dispatch reminder for user_id=%s", entity.user_id
             )
             return False
+
+    async def _eligible_reminder_fields(
+        self,
+        *,
+        session: AsyncSession,
+        entity: ReminderSettings,
+        user: CompanyUser,
+    ) -> set[str]:
+        """Return the subset of enabled toggle field-names that should
+        actually fire right now.
+
+        Phase 6 scope: company-level checks (``program_ending`` /
+        ``new_program``) against ``kpi_challenges``.
+
+        Phase 6.5 scope: user-level checks (``daily_challenge`` /
+        ``streak_alert``) bridged via email →
+        ``authentication_service.users.id`` →
+        ``user_challenge_completion`` / ``user_streak``. When the email
+        can't be resolved to an auth row we conservatively leave the
+        user-level toggles in (skip the narrowing) so unlinked users
+        don't silently lose their reminders.
+
+        ``badge_milestone`` is event-driven elsewhere — left
+        unconditional when the toggle is on.
+        """
+        enabled = {
+            field for field, _ in _REMINDER_TYPE_LABELS if getattr(entity, field)
+        }
+        if not enabled:
+            return set()
+
+        company_id = getattr(user, "company_id", None)
+
+        # ---- Company-level checks (Phase 6) ---------------------------
+        if "program_ending" in enabled:
+            if not await company_has_program_ending_soon(
+                session, company_id=company_id
+            ):
+                enabled.discard("program_ending")
+        if "new_program" in enabled:
+            if not await company_has_new_program_opening_soon(
+                session, company_id=company_id
+            ):
+                enabled.discard("new_program")
+
+        # ---- User-level checks (Phase 6.5) ----------------------------
+        # Only resolve auth_user_id when at least one user-level toggle
+        # is in the enabled set — avoids an unnecessary query for users
+        # who only have window/badge toggles on.
+        needs_auth_user = bool(
+            {"daily_challenge", "streak_alert"} & enabled
+        )
+        if needs_auth_user:
+            auth_user_id = await resolve_auth_user_id_by_email(
+                session, email=user.email
+            )
+            if auth_user_id is None:
+                # Unlinked user — skip the narrowing. The conservative
+                # path preserves Phase-6 behaviour for unmapped users
+                # rather than silently dropping their reminders.
+                logger.info(
+                    "User-level eligibility skipped (no auth row for email) | "
+                    "user_id=%s | email=%s",
+                    user.id, user.email,
+                )
+            else:
+                if "daily_challenge" in enabled:
+                    if not await user_has_incomplete_challenges_today(
+                        session,
+                        auth_user_id=auth_user_id,
+                        company_id=company_id,
+                    ):
+                        enabled.discard("daily_challenge")
+                if "streak_alert" in enabled:
+                    if not await user_streak_at_risk(
+                        session, auth_user_id=auth_user_id
+                    ):
+                        enabled.discard("streak_alert")
+
+        return enabled
+
+    @staticmethod
+    def _record_reminder_log(
+        *,
+        session: AsyncSession,
+        user: CompanyUser,
+        eligible_fields: set[str],
+        send_result: dict,
+    ) -> None:
+        """Insert one ``reminder_log`` row per (type, channel) attempted.
+
+        ``send_result`` is the bookkeeping dict ``_send`` returns: keys
+        ``email`` / ``push`` / ``whatsapp`` each map to ``"sent"`` /
+        ``"failed"`` / ``"skipped"``. Channels that ``_send`` didn't
+        attempt (toggle off) are omitted from the log — they're not
+        attempts."""
+        company_id = getattr(user, "company_id", None)
+        sent_at = datetime.utcnow()
+        for field in eligible_fields:
+            for channel, status in send_result.items():
+                if status == "skipped":
+                    # Channel toggle was off — not an attempt, don't log.
+                    continue
+                session.add(
+                    ReminderLog(
+                        user_id=user.id,
+                        company_id=company_id,
+                        reminder_type=field,
+                        channel=channel,
+                        status=status,
+                        sent_at=sent_at,
+                    )
+                )
 
     # ------------------------------------------------------------------ helpers
 
@@ -255,7 +419,17 @@ class ReminderDispatcher:
         user: CompanyUser,
         reminder_types: list[str],
         session: AsyncSession,
-    ) -> None:
+    ) -> dict:
+        """Send via each enabled channel and return a per-channel status
+        dict for ``_record_reminder_log``.
+
+        Returns one of ``sent`` / ``failed`` / ``skipped`` per channel:
+          * ``sent``    — channel toggle on AND delivery raised no error.
+          * ``failed``  — channel toggle on AND delivery raised.
+          * ``skipped`` — channel toggle off (NOT logged in reminder_log).
+        """
+        result: dict = {"email": "skipped", "push": "skipped", "whatsapp": "skipped"}
+
         body = REMINDER_BODY_TEMPLATE.format(
             name=user.full_name or user.email,
             reminder_types=", ".join(reminder_types),
@@ -271,19 +445,28 @@ class ReminderDispatcher:
                     html=False,
                 )
                 logger.info("Email reminder sent to %s", user.email)
+                result["email"] = "sent"
             except Exception:
                 logger.exception("Email reminder failed for user_id=%s", user.id)
+                result["email"] = "failed"
 
         if entity.push_enabled:
             try:
                 await self._send_push(session, user, reminder_types)
+                result["push"] = "sent"
             except Exception:
                 logger.exception("Push reminder failed for user_id=%s", user.id)
+                result["push"] = "failed"
 
         if entity.whatsapp_enabled:
             logger.info(
                 "[MOCK WHATSAPP] user_id=%s | types=%s", user.id, reminder_types
             )
+            # The current WhatsApp leg is a logged mock with no failure
+            # mode — count as sent so the log reflects "we attempted".
+            result["whatsapp"] = "sent"
+
+        return result
 
     @staticmethod
     async def _send_push(
@@ -349,6 +532,7 @@ class ReminderDispatcher:
         session: AsyncSession,
         entity: ReminderSettings,
         user: CompanyUser,
+        eligible_fields: Optional[set[str]] = None,
     ) -> None:
         """Insert one Notification row per active reminder type.
 
@@ -356,11 +540,20 @@ class ReminderDispatcher:
         flush them in a single round-trip instead of committing once per
         row. NotificationRepository.create commits per call — we bypass it
         deliberately here for batching.
+
+        Phase 6: when ``eligible_fields`` is passed, only types in that
+        set produce a Notification row — bell icon no longer shows
+        "program ending" when nothing's actually ending. Callers that
+        skip the param fall back to the pre-Phase-6 behaviour ("all
+        enabled toggles produce a row") so legacy callers (none today,
+        but defensive) keep working.
         """
         company_id = getattr(user, "company_id", None)
 
         for field, meta in _TOGGLE_TO_NOTIFICATION_META:
             if not getattr(entity, field):
+                continue
+            if eligible_fields is not None and field not in eligible_fields:
                 continue
             session.add(
                 Notification(

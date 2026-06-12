@@ -23,6 +23,8 @@ from . import reminder_settings
 from . import wellness_dimensions
 from . import wellness_dimension_kpi_mappings
 from . import admin_badges
+from . import wellness
+from . import user_suggestions
 
 router = APIRouter(prefix="/api/v1")
 router.include_router(health.router, prefix="/health", tags=["health"])
@@ -49,3 +51,5 @@ router.include_router(notifications.router)
 router.include_router(wellness_dimensions.router)
 router.include_router(wellness_dimension_kpi_mappings.router)
 router.include_router(admin_badges.router)
+router.include_router(wellness.router)
+router.include_router(user_suggestions.router)

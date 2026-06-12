@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from authentication_service.app.core.dependencies import get_current_user
 from authentication_service.app.core.rbac import require_permission
+from config_service.app.core.audit_helper import safe_audit_log
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.db import get_db
@@ -100,6 +101,15 @@ async def create_theme(
         payload.company_id = resolved
         service = ThemeService(ThemeRepository(db))
         result = await service.create(payload)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=resolved,
+            action="THEME_CREATED",
+            entity="themes",
+            new_value=result.model_dump(),
+            logger=logger,
+        )
         return success_response(data=result, message="Theme created successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | create_theme | %s", e.message)
@@ -126,7 +136,18 @@ async def update_theme(
     try:
         resolved = await _resolve_company_id(current_user, db, company_id)
         service = ThemeService(ThemeRepository(db))
+        before = await service.get(theme_key, resolved)
         result = await service.update(theme_key, payload, resolved)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=resolved,
+            action="THEME_UPDATED",
+            entity="themes",
+            old_value=before.model_dump(),
+            new_value=result.model_dump(),
+            logger=logger,
+        )
         return success_response(data=result, message="Theme updated successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | update_theme | %s", e.message)
@@ -152,7 +173,18 @@ async def delete_theme(
     try:
         resolved = await _resolve_company_id(current_user, db, company_id)
         service = ThemeService(ThemeRepository(db))
+        before = await service.get(theme_key, resolved)
         result = await service.delete(theme_key, resolved)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=resolved,
+            action="THEME_DELETED",
+            entity="themes",
+            old_value=before.model_dump(),
+            new_value={"theme_key": str(theme_key), "is_active": False, "is_deleted": True},
+            logger=logger,
+        )
         return success_response(data=result, message="Theme deleted successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | delete_theme | %s", e.message)

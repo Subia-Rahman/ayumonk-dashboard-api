@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from authentication_service.app.core.dependencies import get_current_user
 from authentication_service.app.core.rbac import require_permission
+from config_service.app.core.audit_helper import safe_audit_log
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.db import get_db
@@ -37,6 +38,15 @@ async def create_suggestion(
     try:
         service = SuggestionService(SuggestionRepository(db))
         result = await service.create(payload)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=getattr(current_user, "tenant_id", None),
+            action="SUGGESTION_CREATED",
+            entity="suggestions",
+            new_value=result.model_dump(),
+            logger=logger,
+        )
         return success_response(data=result, message="Suggestion created successfully")
     except ValidationError as e:
         logger.warning("VALIDATION_ERROR | create_suggestion | %s", e.errors())
@@ -122,7 +132,21 @@ async def update_suggestion(
 
     try:
         service = SuggestionService(SuggestionRepository(db))
+        # Snapshot the pre-update state so the audit row carries both
+        # sides of the diff. Same 404 the update would raise — fine to
+        # let it surface here.
+        before = await service.get(suggestion_id)
         result = await service.update(suggestion_id, payload)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=getattr(current_user, "tenant_id", None),
+            action="SUGGESTION_UPDATED",
+            entity="suggestions",
+            old_value=before.model_dump(),
+            new_value=result.model_dump(),
+            logger=logger,
+        )
         return success_response(data=result, message="Suggestion updated successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | update_suggestion | %s", e.message)
@@ -150,7 +174,18 @@ async def delete_suggestion(
 
     try:
         service = SuggestionService(SuggestionRepository(db))
+        before = await service.get(suggestion_id)
         result = await service.delete(suggestion_id)
+        await safe_audit_log(
+            db,
+            user_id=current_user.user_id,
+            tenant_id=getattr(current_user, "tenant_id", None),
+            action="SUGGESTION_DELETED",
+            entity="suggestions",
+            old_value=before.model_dump(),
+            new_value={"id": before.id, "is_active": False, "is_deleted": True},
+            logger=logger,
+        )
         return success_response(data=result, message="Suggestion deleted successfully")
     except BusinessException as e:
         logger.warning("BUSINESS_ERROR | delete_suggestion | %s", e.message)

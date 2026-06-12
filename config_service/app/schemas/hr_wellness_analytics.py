@@ -102,3 +102,39 @@ class HrSummaryCardsResponse(BaseModel):
     absenteeism: HrCardValue
     sleep_score: HrCardValue
     stress_score: HrCardValue
+
+
+# ---------------------------------------------------------------------------
+# Employee count — GET /hr/employee-count
+# ---------------------------------------------------------------------------
+
+
+class EmployeeCountResponse(BaseModel):
+    """Lightweight badge powering "X of Y employees in scope" on the HR
+    Analytics filter strip. ``total`` is the company headcount irrespective
+    of filters; ``filtered`` is the count after applying the seven shared
+    HR filter axes."""
+
+    total: int
+    filtered: int
+
+
+# ---------------------------------------------------------------------------
+# Headcount per bucket — GET /hr/headcount
+# ---------------------------------------------------------------------------
+
+
+class HeadcountBucket(BaseModel):
+    """One bar in the by-department / by-location grouping."""
+
+    label: str
+    count: int
+
+
+class HeadcountResponse(BaseModel):
+    """Headcount broken down by department and by location. Used to size
+    bubbles on the Wellness×Productivity scatter plot (and any other chart
+    that needs to weight a series by department headcount)."""
+
+    by_department: list[HeadcountBucket]
+    by_location: list[HeadcountBucket]

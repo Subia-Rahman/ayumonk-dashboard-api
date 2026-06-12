@@ -46,6 +46,34 @@ class ChallengeKPIMappingRequest(BaseModel):
         return end_date
 
 
+class KPIChallengeUpdateRequest(BaseModel):
+    """Patch body for ``PUT /challenges/kpi-mappings/{id}``.
+
+    All three fields are optional — pass only the columns you want to
+    change. Typical usage:
+      * Extend a window: ``{ "end_date": "2026-12-31" }``
+      * Pause a window: ``{ "is_active": false }``
+      * Resume a paused window: ``{ "is_active": true }``
+      * Move the start: ``{ "start_date": "2026-07-01" }``
+
+    Date-order check fires only when at least one of the dates is in
+    this payload — partial updates trust the existing row's other date.
+    The service re-validates against the merged result so a request
+    that would invert start/end is rejected with 422.
+    """
+
+    start_date: Optional[date] = None
+    end_date: Optional[date] = None
+    is_active: Optional[bool] = None
+
+    @validator("end_date")
+    def validate_date_range(cls, end_date: Optional[date], values):
+        start_date = values.get("start_date")
+        if start_date and end_date and start_date > end_date:
+            raise ValueError("start_date cannot be greater than end_date")
+        return end_date
+
+
 class ChallengeCreateRequest(BaseModel):
     company_id: UUID
     name: str = Field(..., min_length=1, max_length=255)

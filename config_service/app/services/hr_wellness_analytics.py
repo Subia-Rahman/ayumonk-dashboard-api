@@ -33,6 +33,13 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config_service.app.core.business_exceptions import BusinessException
+from config_service.app.services.hr_filters import (
+    EMPLOYEE_DEMOGRAPHIC_FILTERS_NO_GENDER_SQL,
+    EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL,
+    HrFilters,
+    SUBMISSION_WINDOW_SQL,
+    THEME_SCOPE_FILTER_SQL,
+)
 
 
 # Fixed display order for the gender chart. Genders missing from the data set
@@ -55,17 +62,23 @@ _WORKING_DAYS_PER_MONTH = Decimal("22")
 
 
 # wellnessindex branch — average pre-computed wellness_index by dept / loc.
-_WI_BY_BUCKET_SQL = """
+# Filters apply inside the ``employees`` CTE (LEFT JOIN d/l so the
+# shared demographic-filter fragment can resolve d.name / l.name).
+_WI_BY_BUCKET_SQL = f"""
 WITH employees AS (
     SELECT
         cu.id          AS user_id,
         cu.department_id,
         c.location_id  AS location_id
     FROM company_users cu
-    JOIN companies c ON c.id = cu.company_id
+    JOIN companies c          ON c.id = cu.company_id
+    LEFT JOIN departments d   ON d.id = cu.department_id
+    LEFT JOIN locations   l   ON l.id = c.location_id
     WHERE cu.company_id = :company_id
       AND cu.is_active   = TRUE
       AND cu.is_deleted  = FALSE
+      {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+      {THEME_SCOPE_FILTER_SQL}
 )
 SELECT
     'dept' AS bucket_type,
@@ -91,10 +104,100 @@ GROUP BY l.name
 """
 
 
+# wellnessindex branch — date-window variant. Bypasses v_user_wellness_index
+# (its ``is_latest = TRUE`` flag is wrong inside a window) and recomputes
+# WI inline using the same formula as the view, but with "latest within
+# window" semantics. Demographic + theme filters apply inside ``employees``;
+# date filters apply inside ``latest_response``.
+_WI_BY_BUCKET_DATE_SQL = f"""
+WITH employees AS (
+    SELECT
+        cu.id          AS user_id,
+        cu.email       AS email,
+        cu.company_id  AS company_id,
+        cu.department_id,
+        c.location_id  AS location_id
+    FROM company_users cu
+    JOIN companies c          ON c.id = cu.company_id
+    LEFT JOIN departments d   ON d.id = cu.department_id
+    LEFT JOIN locations   l   ON l.id = c.location_id
+    WHERE cu.company_id = :company_id
+      AND cu.is_active   = TRUE
+      AND cu.is_deleted  = FALSE
+      {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+      {THEME_SCOPE_FILTER_SQL}
+),
+latest_response AS (
+    SELECT DISTINCT ON (efr.employee_email)
+        efr.employee_email,
+        efr.response_id
+    FROM employee_form_response efr
+    JOIN employees e ON e.email = efr.employee_email
+    WHERE efr.is_deleted       = FALSE
+      AND efr.company_id::uuid = :company_id
+      {SUBMISSION_WINDOW_SQL}
+    ORDER BY efr.employee_email, efr.submitted_at DESC
+),
+user_kpi_score AS (
+    SELECT
+        e.user_id,
+        e.location_id,
+        e.department_id,
+        q.kpi                    AS kpi_key,
+        AVG(efa.score)::numeric  AS score
+    FROM employees e
+    JOIN latest_response lr        ON lr.employee_email = e.email
+    JOIN employee_form_answer efa  ON efa.response_id   = lr.response_id
+                                  AND efa.is_deleted    = FALSE
+    JOIN kpi_questions q           ON q.question_code   = efa.question_code
+                                  AND q.company_id      = e.company_id
+                                  AND q.is_deleted      = FALSE
+    GROUP BY e.user_id, e.location_id, e.department_id, q.kpi
+),
+user_wi AS (
+    SELECT
+        uks.user_id,
+        uks.location_id,
+        uks.department_id,
+        LEAST(100, GREATEST(0,
+            ((SUM(uks.score * COALESCE(k.wi_weight, 0.10))
+              / NULLIF(SUM(COALESCE(k.wi_weight, 0.10)), 0)) - 1) / 4 * 100
+        )) AS wellness_index
+    FROM user_kpi_score uks
+    JOIN kpis k ON k.kpi_key    = uks.kpi_key
+               AND k.company_id = :company_id
+               AND k.is_active  = TRUE
+               AND k.is_deleted = FALSE
+    GROUP BY uks.user_id, uks.location_id, uks.department_id
+)
+SELECT
+    'dept' AS bucket_type,
+    COALESCE(d.name, '')                              AS label,
+    ROUND(AVG(uw.wellness_index)::numeric, 1)         AS value
+FROM user_wi uw
+LEFT JOIN departments d ON d.id = uw.department_id
+WHERE uw.department_id IS NOT NULL
+GROUP BY d.name
+
+UNION ALL
+
+SELECT
+    'loc' AS bucket_type,
+    COALESCE(l.name, '')                              AS label,
+    ROUND(AVG(uw.wellness_index)::numeric, 1)         AS value
+FROM user_wi uw
+LEFT JOIN locations l ON l.id = uw.location_id
+WHERE uw.location_id IS NOT NULL
+GROUP BY l.name
+"""
+
+
 # Configured dimension branch — pull raw (user, kpi, score) rows for the
 # mapped KPIs. Aggregation happens in Python so the spec's "skip user if
-# missing any mapped KPI" rule is enforced explicitly.
-_DIMENSION_RAW_ROWS_SQL = """
+# missing any mapped KPI" rule is enforced explicitly. Demographic +
+# theme filters are spliced into the WHERE clause; the cu / d / l aliases
+# the fragments expect are already in scope.
+_DIMENSION_RAW_ROWS_SQL = f"""
 WITH mapping AS (
     SELECT wdkm.kpi_key, wdkm.weight
     FROM wellness_dimension_kpi_mapping wdkm
@@ -123,6 +226,82 @@ JOIN companies c       ON c.id       = cu.company_id
 LEFT JOIN departments d ON d.id      = cu.department_id
 LEFT JOIN locations  l ON l.id      = c.location_id
 WHERE v.company_id = :company_id
+  {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+  {THEME_SCOPE_FILTER_SQL}
+"""
+
+
+# Configured dimension branch — date-window variant. Bypasses v_user_kpi_score
+# so "latest within window" is correctly computed. Same row shape as
+# _DIMENSION_RAW_ROWS_SQL so the downstream Python aggregator doesn't branch.
+_DIMENSION_RAW_ROWS_DATE_SQL = f"""
+WITH employees AS (
+    SELECT
+        cu.id          AS user_id,
+        cu.email       AS email,
+        cu.company_id  AS company_id,
+        cu.department_id,
+        c.location_id  AS location_id
+    FROM company_users cu
+    JOIN companies c          ON c.id = cu.company_id
+    LEFT JOIN departments d   ON d.id = cu.department_id
+    LEFT JOIN locations   l   ON l.id = c.location_id
+    WHERE cu.company_id = :company_id
+      AND cu.is_active   = TRUE
+      AND cu.is_deleted  = FALSE
+      {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+      {THEME_SCOPE_FILTER_SQL}
+),
+mapping AS (
+    SELECT wdkm.kpi_key, wdkm.weight
+    FROM wellness_dimension_kpi_mapping wdkm
+    JOIN wellness_dimension wd ON wd.id = wdkm.dimension_id
+    WHERE wd.dimension_key = :dimension_key
+      AND wd.company_id    = :company_id
+      AND wd.is_active     = TRUE
+      AND wd.is_deleted    = FALSE
+      AND wdkm.company_id  = :company_id
+      AND wdkm.is_active   = TRUE
+      AND wdkm.is_deleted  = FALSE
+),
+latest_response AS (
+    SELECT DISTINCT ON (efr.employee_email)
+        efr.employee_email,
+        efr.response_id
+    FROM employee_form_response efr
+    JOIN employees e ON e.email = efr.employee_email
+    WHERE efr.is_deleted       = FALSE
+      AND efr.company_id::uuid = :company_id
+      {SUBMISSION_WINDOW_SQL}
+    ORDER BY efr.employee_email, efr.submitted_at DESC
+),
+user_kpi_score AS (
+    SELECT
+        e.user_id,
+        e.department_id,
+        e.location_id,
+        q.kpi                              AS kpi_key,
+        AVG(efa.score)::numeric            AS score
+    FROM employees e
+    JOIN latest_response lr        ON lr.employee_email = e.email
+    JOIN employee_form_answer efa  ON efa.response_id   = lr.response_id
+                                  AND efa.is_deleted    = FALSE
+    JOIN kpi_questions q           ON q.question_code   = efa.question_code
+                                  AND q.company_id      = e.company_id
+                                  AND q.is_deleted      = FALSE
+    GROUP BY e.user_id, e.department_id, e.location_id, q.kpi
+)
+SELECT
+    uks.user_id      AS user_id,
+    uks.kpi_key      AS kpi_key,
+    uks.score        AS score,
+    m.weight         AS weight,
+    d.name           AS dept,
+    l.name           AS loc
+FROM user_kpi_score uks
+JOIN mapping m            ON m.kpi_key = uks.kpi_key
+LEFT JOIN departments d   ON d.id      = uks.department_id
+LEFT JOIN locations   l   ON l.id      = uks.location_id
 """
 
 
@@ -155,40 +334,119 @@ ORDER BY display_order ASC, id ASC
 
 
 # Gender wellness branch — average wellness_index by company_users.gender.
-_GENDER_WELLNESS_SQL = """
+# Demographic filters (minus gender, which is the grouping axis) apply on
+# the cu join. Date window forces the date-branch variant below.
+_GENDER_WELLNESS_SQL = f"""
 SELECT
     cu.gender                                  AS gender,
     ROUND(AVG(wi.wellness_index)::numeric, 1)  AS value
 FROM company_users cu
+JOIN companies c           ON c.id = cu.company_id
+LEFT JOIN departments d    ON d.id = cu.department_id
+LEFT JOIN locations   l    ON l.id = c.location_id
 JOIN v_user_wellness_index wi ON wi.user_id = cu.id
 WHERE cu.company_id  = :company_id
   AND cu.is_active   = TRUE
   AND cu.is_deleted  = FALSE
   AND cu.gender IS NOT NULL
   AND cu.gender <> ''
+  {EMPLOYEE_DEMOGRAPHIC_FILTERS_NO_GENDER_SQL}
+  {THEME_SCOPE_FILTER_SQL}
 GROUP BY cu.gender
 """
 
 
+# Gender wellness branch — date-window variant. Bypasses v_user_wellness_index
+# and recomputes WI inline using the same formula, with "latest within window"
+# semantics.
+_GENDER_WELLNESS_DATE_SQL = f"""
+WITH employees AS (
+    SELECT
+        cu.id          AS user_id,
+        cu.email       AS email,
+        cu.company_id  AS company_id,
+        cu.gender      AS gender
+    FROM company_users cu
+    JOIN companies c          ON c.id = cu.company_id
+    LEFT JOIN departments d   ON d.id = cu.department_id
+    LEFT JOIN locations   l   ON l.id = c.location_id
+    WHERE cu.company_id  = :company_id
+      AND cu.is_active   = TRUE
+      AND cu.is_deleted  = FALSE
+      AND cu.gender IS NOT NULL
+      AND cu.gender <> ''
+      {EMPLOYEE_DEMOGRAPHIC_FILTERS_NO_GENDER_SQL}
+      {THEME_SCOPE_FILTER_SQL}
+),
+latest_response AS (
+    SELECT DISTINCT ON (efr.employee_email)
+        efr.employee_email,
+        efr.response_id
+    FROM employee_form_response efr
+    JOIN employees e ON e.email = efr.employee_email
+    WHERE efr.is_deleted       = FALSE
+      AND efr.company_id::uuid = :company_id
+      {SUBMISSION_WINDOW_SQL}
+    ORDER BY efr.employee_email, efr.submitted_at DESC
+),
+user_kpi_score AS (
+    SELECT
+        e.user_id,
+        e.gender,
+        q.kpi                    AS kpi_key,
+        AVG(efa.score)::numeric  AS score
+    FROM employees e
+    JOIN latest_response lr        ON lr.employee_email = e.email
+    JOIN employee_form_answer efa  ON efa.response_id   = lr.response_id
+                                  AND efa.is_deleted    = FALSE
+    JOIN kpi_questions q           ON q.question_code   = efa.question_code
+                                  AND q.company_id      = e.company_id
+                                  AND q.is_deleted      = FALSE
+    GROUP BY e.user_id, e.gender, q.kpi
+),
+user_wi AS (
+    SELECT
+        uks.user_id,
+        uks.gender,
+        LEAST(100, GREATEST(0,
+            ((SUM(uks.score * COALESCE(k.wi_weight, 0.10))
+              / NULLIF(SUM(COALESCE(k.wi_weight, 0.10)), 0)) - 1) / 4 * 100
+        )) AS wellness_index
+    FROM user_kpi_score uks
+    JOIN kpis k ON k.kpi_key    = uks.kpi_key
+               AND k.company_id = :company_id
+               AND k.is_active  = TRUE
+               AND k.is_deleted = FALSE
+    GROUP BY uks.user_id, uks.gender
+)
+SELECT gender, ROUND(AVG(wellness_index)::numeric, 1) AS value
+FROM user_wi
+GROUP BY gender
+"""
+
+
 # Location x Department heatmap — average wellness_index per (loc, dept) cell.
-# Uses v_user_wellness_index (is_latest = TRUE baked in) so freshness aligns
-# with the other HR analytics endpoints. Optional :department / :location
-# filters are no-ops when bound as NULL — the explicit `::text` casts keep the
-# driver from raising "could not determine data type of parameter" on a NULL
-# bind.
-_HEATMAP_LOC_DEPT_SQL = """
+# Uses v_user_wellness_index (is_latest = TRUE baked in) when no date window
+# is set. All seven shared HR filters (dept/loc/age/gender/theme + dates)
+# apply inside the employees CTE so the (loc, dept) buckets reflect the
+# narrowed employee pool.
+_HEATMAP_LOC_DEPT_SQL = f"""
 WITH employees AS (
     SELECT
         cu.id          AS user_id,
         cu.department_id,
         c.location_id  AS location_id
     FROM company_users cu
-    JOIN companies c ON c.id = cu.company_id
+    JOIN companies c          ON c.id = cu.company_id
+    LEFT JOIN departments d   ON d.id = cu.department_id
+    LEFT JOIN locations   l   ON l.id = c.location_id
     WHERE cu.company_id = :company_id
       AND cu.is_active   = TRUE
       AND cu.is_deleted  = FALSE
       AND cu.department_id IS NOT NULL
       AND c.location_id  IS NOT NULL
+      {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+      {THEME_SCOPE_FILTER_SQL}
 )
 SELECT
     l.name                                     AS location,
@@ -198,8 +456,6 @@ FROM employees e
 JOIN v_user_wellness_index wi ON wi.user_id = e.user_id
 JOIN departments d            ON d.id = e.department_id
 JOIN locations   l            ON l.id = e.location_id
-WHERE (CAST(:department_filter AS TEXT) IS NULL OR d.name = CAST(:department_filter AS TEXT))
-  AND (CAST(:location_filter   AS TEXT) IS NULL OR l.name = CAST(:location_filter   AS TEXT))
 GROUP BY l.name, d.name
 """
 
@@ -209,7 +465,7 @@ GROUP BY l.name, d.name
 # globally-latest submission. So we recompute the WI inline using the same
 # formula as v_user_wellness_index (((Σ score*weight / Σ weight) - 1)/4 * 100),
 # but with the latest-per-user resolved against the date window.
-_HEATMAP_LOC_DEPT_DATE_SQL = """
+_HEATMAP_LOC_DEPT_DATE_SQL = f"""
 WITH employees AS (
     SELECT
         cu.id          AS user_id,
@@ -218,12 +474,16 @@ WITH employees AS (
         cu.department_id,
         c.location_id  AS location_id
     FROM company_users cu
-    JOIN companies c ON c.id = cu.company_id
+    JOIN companies c          ON c.id = cu.company_id
+    LEFT JOIN departments d   ON d.id = cu.department_id
+    LEFT JOIN locations   l   ON l.id = c.location_id
     WHERE cu.company_id = :company_id
       AND cu.is_active   = TRUE
       AND cu.is_deleted  = FALSE
       AND cu.department_id IS NOT NULL
       AND c.location_id  IS NOT NULL
+      {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+      {THEME_SCOPE_FILTER_SQL}
 ),
 latest_response AS (
     SELECT DISTINCT ON (efr.employee_email)
@@ -231,10 +491,9 @@ latest_response AS (
         efr.response_id
     FROM employee_form_response efr
     JOIN employees e ON e.email = efr.employee_email
-    WHERE efr.is_deleted     = FALSE
+    WHERE efr.is_deleted       = FALSE
       AND efr.company_id::uuid = :company_id
-      AND (CAST(:date_from AS DATE) IS NULL OR efr.submitted_at >= CAST(:date_from AS DATE))
-      AND (CAST(:date_to   AS DATE) IS NULL OR efr.submitted_at <  CAST(:date_to   AS DATE) + INTERVAL '1 day')
+      {SUBMISSION_WINDOW_SQL}
     ORDER BY efr.employee_email, efr.submitted_at DESC
 ),
 user_kpi_score AS (
@@ -276,8 +535,6 @@ SELECT
 FROM user_wi uw
 JOIN departments d ON d.id = uw.department_id
 JOIN locations   l ON l.id = uw.location_id
-WHERE (CAST(:department_filter AS TEXT) IS NULL OR d.name = CAST(:department_filter AS TEXT))
-  AND (CAST(:location_filter   AS TEXT) IS NULL OR l.name = CAST(:location_filter   AS TEXT))
 GROUP BY l.name, d.name
 """
 
@@ -286,27 +543,42 @@ GROUP BY l.name, d.name
 # in the company. Shared by all six cards: wellness index uses kpis.wi_weight,
 # productivity / engagement / absenteeism use the wellness_dimension mapping
 # (normalized to 0-100), and sleep / stress read the raw scores directly.
-# Sourced from v_user_kpi_score so `is_latest = TRUE` is implicit.
-_SUMMARY_USER_KPI_SCORES_SQL = """
+# Sourced from v_user_kpi_score so `is_latest = TRUE` is implicit. Demographic
+# + theme filters apply on the cu join.
+_SUMMARY_USER_KPI_SCORES_SQL = f"""
 SELECT v.user_id, v.kpi_key, v.score
 FROM v_user_kpi_score v
+JOIN company_users cu  ON cu.id      = v.user_id
+                       AND cu.is_active  = TRUE
+                       AND cu.is_deleted = FALSE
+JOIN companies c       ON c.id       = cu.company_id
+LEFT JOIN departments d ON d.id      = cu.department_id
+LEFT JOIN locations   l ON l.id      = c.location_id
 WHERE v.company_id = :company_id
+  {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+  {THEME_SCOPE_FILTER_SQL}
 """
 
 
 # Date-filtered variant — bypasses the view's `is_latest = TRUE` flag because
 # "latest within window" may not be the globally-latest submission. Recomputes
 # the per-user KPI score (AVG over efa.score for the latest response within
-# the date range) using the same join shape as v_user_kpi_score.
-_SUMMARY_USER_KPI_SCORES_DATE_SQL = """
+# the date range) using the same join shape as v_user_kpi_score. Demographic
+# + theme filters apply inside the employees CTE.
+_SUMMARY_USER_KPI_SCORES_DATE_SQL = f"""
 WITH employees AS (
     SELECT cu.id          AS user_id,
            cu.email        AS email,
            cu.company_id   AS company_id
     FROM company_users cu
+    JOIN companies c          ON c.id = cu.company_id
+    LEFT JOIN departments d   ON d.id = cu.department_id
+    LEFT JOIN locations   l   ON l.id = c.location_id
     WHERE cu.company_id = :company_id
       AND cu.is_active   = TRUE
       AND cu.is_deleted  = FALSE
+      {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+      {THEME_SCOPE_FILTER_SQL}
 ),
 latest_response AS (
     SELECT DISTINCT ON (efr.employee_email)
@@ -316,8 +588,7 @@ latest_response AS (
     JOIN employees e ON e.email = efr.employee_email
     WHERE efr.is_deleted       = FALSE
       AND efr.company_id::uuid = :company_id
-      AND (CAST(:date_from AS DATE) IS NULL OR efr.submitted_at >= CAST(:date_from AS DATE))
-      AND (CAST(:date_to   AS DATE) IS NULL OR efr.submitted_at <  CAST(:date_to   AS DATE) + INTERVAL '1 day')
+      {SUBMISSION_WINDOW_SQL}
     ORDER BY efr.employee_email, efr.submitted_at DESC
 )
 SELECT
@@ -367,7 +638,8 @@ WHERE wd.company_id   = :company_id
 
 # Gender productivity branch — raw rows joined with the productivity mapping.
 # Same shape as _DIMENSION_RAW_ROWS_SQL but with gender instead of dept/loc.
-_GENDER_PRODUCTIVITY_RAW_SQL = """
+# Demographic filters (minus gender) + theme scope apply on the cu join.
+_GENDER_PRODUCTIVITY_RAW_SQL = f"""
 WITH mapping AS (
     SELECT wdkm.kpi_key, wdkm.weight
     FROM wellness_dimension_kpi_mapping wdkm
@@ -391,9 +663,83 @@ JOIN mapping m         ON m.kpi_key = v.kpi_key
 JOIN company_users cu  ON cu.id      = v.user_id
                        AND cu.is_active  = TRUE
                        AND cu.is_deleted = FALSE
+JOIN companies c       ON c.id       = cu.company_id
+LEFT JOIN departments d ON d.id      = cu.department_id
+LEFT JOIN locations   l ON l.id      = c.location_id
 WHERE v.company_id = :company_id
   AND cu.gender IS NOT NULL
   AND cu.gender <> ''
+  {EMPLOYEE_DEMOGRAPHIC_FILTERS_NO_GENDER_SQL}
+  {THEME_SCOPE_FILTER_SQL}
+"""
+
+
+# Gender productivity branch — date-window variant. Bypasses v_user_kpi_score.
+_GENDER_PRODUCTIVITY_RAW_DATE_SQL = f"""
+WITH employees AS (
+    SELECT
+        cu.id          AS user_id,
+        cu.email       AS email,
+        cu.company_id  AS company_id,
+        cu.gender      AS gender
+    FROM company_users cu
+    JOIN companies c          ON c.id = cu.company_id
+    LEFT JOIN departments d   ON d.id = cu.department_id
+    LEFT JOIN locations   l   ON l.id = c.location_id
+    WHERE cu.company_id  = :company_id
+      AND cu.is_active   = TRUE
+      AND cu.is_deleted  = FALSE
+      AND cu.gender IS NOT NULL
+      AND cu.gender <> ''
+      {EMPLOYEE_DEMOGRAPHIC_FILTERS_NO_GENDER_SQL}
+      {THEME_SCOPE_FILTER_SQL}
+),
+mapping AS (
+    SELECT wdkm.kpi_key, wdkm.weight
+    FROM wellness_dimension_kpi_mapping wdkm
+    JOIN wellness_dimension wd ON wd.id = wdkm.dimension_id
+    WHERE wd.dimension_key = 'productivity'
+      AND wd.company_id    = :company_id
+      AND wd.is_active     = TRUE
+      AND wd.is_deleted    = FALSE
+      AND wdkm.company_id  = :company_id
+      AND wdkm.is_active   = TRUE
+      AND wdkm.is_deleted  = FALSE
+),
+latest_response AS (
+    SELECT DISTINCT ON (efr.employee_email)
+        efr.employee_email,
+        efr.response_id
+    FROM employee_form_response efr
+    JOIN employees e ON e.email = efr.employee_email
+    WHERE efr.is_deleted       = FALSE
+      AND efr.company_id::uuid = :company_id
+      {SUBMISSION_WINDOW_SQL}
+    ORDER BY efr.employee_email, efr.submitted_at DESC
+),
+user_kpi_score AS (
+    SELECT
+        e.user_id,
+        e.gender,
+        q.kpi                              AS kpi_key,
+        AVG(efa.score)::numeric            AS score
+    FROM employees e
+    JOIN latest_response lr        ON lr.employee_email = e.email
+    JOIN employee_form_answer efa  ON efa.response_id   = lr.response_id
+                                  AND efa.is_deleted    = FALSE
+    JOIN kpi_questions q           ON q.question_code   = efa.question_code
+                                  AND q.company_id      = e.company_id
+                                  AND q.is_deleted      = FALSE
+    GROUP BY e.user_id, e.gender, q.kpi
+)
+SELECT
+    uks.user_id  AS user_id,
+    uks.kpi_key  AS kpi_key,
+    uks.score    AS score,
+    m.weight     AS weight,
+    uks.gender   AS gender
+FROM user_kpi_score uks
+JOIN mapping m ON m.kpi_key = uks.kpi_key
 """
 
 
@@ -442,17 +788,30 @@ class HrWellnessAnalyticsService:
     # -----------------------------------------------------------------------
 
     async def wellness_by_dimension(
-        self, *, dimension: str, company_id: UUID
+        self,
+        *,
+        dimension: str,
+        company_id: UUID,
+        filters: Optional[HrFilters] = None,
     ) -> dict:
         """Branches on the dimension key — `wellnessindex` reads the
         pre-computed view; any other key reads the configured KPI mapping.
-        Raises BusinessException(404) when the dimension is not configured."""
+        Raises BusinessException(404) when the dimension is not configured.
+
+        ``filters`` (when supplied) narrows the employee pool on the seven
+        shared HR Analytics axes. When the date window is set, both
+        branches bypass their underlying view to honour "latest within
+        window" semantics.
+        """
         key = (dimension or "").strip().lower()
+        filters = filters or HrFilters()
         if key == WELLNESS_INDEX_KEY:
-            buckets = await self._wellness_index_buckets(company_id=company_id)
+            buckets = await self._wellness_index_buckets(
+                company_id=company_id, filters=filters
+            )
         else:
             buckets = await self._configured_dimension_buckets(
-                dimension_key=key, company_id=company_id
+                dimension_key=key, company_id=company_id, filters=filters
             )
         return {
             "dimension": key,
@@ -460,10 +819,16 @@ class HrWellnessAnalyticsService:
             "by_location": buckets["by_location"],
         }
 
-    async def _wellness_index_buckets(self, *, company_id: UUID) -> dict:
-        result = await self.db.execute(
-            sql_text(_WI_BY_BUCKET_SQL), {"company_id": company_id}
+    async def _wellness_index_buckets(
+        self, *, company_id: UUID, filters: HrFilters
+    ) -> dict:
+        sql = (
+            _WI_BY_BUCKET_DATE_SQL
+            if filters.has_date_window()
+            else _WI_BY_BUCKET_SQL
         )
+        params = {"company_id": company_id, **filters.bind_values()}
+        result = await self.db.execute(sql_text(sql), params)
         by_department: list[dict] = []
         by_location: list[dict] = []
         for bucket_type, label, value in result.all():
@@ -480,7 +845,7 @@ class HrWellnessAnalyticsService:
         return {"by_department": by_department, "by_location": by_location}
 
     async def _configured_dimension_buckets(
-        self, *, dimension_key: str, company_id: UUID
+        self, *, dimension_key: str, company_id: UUID, filters: HrFilters
     ) -> dict:
         # 1. Verify the dimension is configured for this tenant. Empty -> 404.
         mapping_check = await self.db.execute(
@@ -494,10 +859,19 @@ class HrWellnessAnalyticsService:
             )
 
         # 2. Pull raw (user, kpi, score, weight, dept, loc) rows.
+        rows_sql = (
+            _DIMENSION_RAW_ROWS_DATE_SQL
+            if filters.has_date_window()
+            else _DIMENSION_RAW_ROWS_SQL
+        )
         rows = (
             await self.db.execute(
-                sql_text(_DIMENSION_RAW_ROWS_SQL),
-                {"dimension_key": dimension_key, "company_id": company_id},
+                sql_text(rows_sql),
+                {
+                    "dimension_key": dimension_key,
+                    "company_id": company_id,
+                    **filters.bind_values(),
+                },
             )
         ).all()
 
@@ -573,15 +947,28 @@ class HrWellnessAnalyticsService:
     # -----------------------------------------------------------------------
 
     async def gender_wellness_productivity(
-        self, *, company_id: UUID
+        self, *, company_id: UUID, filters: Optional[HrFilters] = None
     ) -> list[dict]:
         """Wellness comes from `v_user_wellness_index`; productivity from the
         configured `productivity` dimension mapping. Missing dimension
         configuration returns `productivity_score=None` (per spec, not an
-        error). Genders with no wellness data are omitted from the response."""
+        error). Genders with no wellness data are omitted from the response.
+
+        The endpoint groups by gender, so a caller-supplied ``gender`` filter
+        is ignored (the SQL fragments used here intentionally skip the gender
+        clause). All other filters (dept/loc/age/date/theme) narrow the
+        employee pool feeding each bar.
+        """
+        filters = filters or HrFilters()
+        wellness_sql = (
+            _GENDER_WELLNESS_DATE_SQL
+            if filters.has_date_window()
+            else _GENDER_WELLNESS_SQL
+        )
         wellness_rows = (
             await self.db.execute(
-                sql_text(_GENDER_WELLNESS_SQL), {"company_id": company_id}
+                sql_text(wellness_sql),
+                {"company_id": company_id, **filters.bind_values()},
             )
         ).all()
         wellness_by_gender: dict[str, Decimal] = {
@@ -591,7 +978,7 @@ class HrWellnessAnalyticsService:
         }
 
         productivity_by_gender = await self._productivity_by_gender(
-            company_id=company_id
+            company_id=company_id, filters=filters
         )
 
         result: list[dict] = []
@@ -617,7 +1004,7 @@ class HrWellnessAnalyticsService:
         return result
 
     async def _productivity_by_gender(
-        self, *, company_id: UUID
+        self, *, company_id: UUID, filters: HrFilters
     ) -> dict[str, Optional[Decimal]]:
         """Returns {gender: avg(weighted_productivity)} or an empty dict when
         the 'productivity' dimension isn't configured for this tenant."""
@@ -628,9 +1015,15 @@ class HrWellnessAnalyticsService:
         if mapping_check.scalar() is None:
             return {}
 
+        raw_sql = (
+            _GENDER_PRODUCTIVITY_RAW_DATE_SQL
+            if filters.has_date_window()
+            else _GENDER_PRODUCTIVITY_RAW_SQL
+        )
         rows = (
             await self.db.execute(
-                sql_text(_GENDER_PRODUCTIVITY_RAW_SQL), {"company_id": company_id}
+                sql_text(raw_sql),
+                {"company_id": company_id, **filters.bind_values()},
             )
         ).all()
 
@@ -689,10 +1082,7 @@ class HrWellnessAnalyticsService:
         self,
         *,
         company_id: UUID,
-        department: Optional[str] = None,
-        location: Optional[str] = None,
-        date_from: Optional[date] = None,
-        date_to: Optional[date] = None,
+        filters: Optional[HrFilters] = None,
     ) -> dict:
         """Aggregates wellness_index by (location, department). Returns the
         nested heatmap structure the frontend renders directly — a sorted
@@ -702,19 +1092,16 @@ class HrWellnessAnalyticsService:
 
         Date filters bypass `v_user_wellness_index` (whose `is_latest = TRUE`
         flag is wrong inside a date window) and recompute the WI inline using
-        the latest submission within the window."""
-        use_date_branch = date_from is not None or date_to is not None
-        params = {
-            "company_id": company_id,
-            "department_filter": department or None,
-            "location_filter": location or None,
-        }
-        if use_date_branch:
-            params["date_from"] = date_from
-            params["date_to"] = date_to
-            sql = _HEATMAP_LOC_DEPT_DATE_SQL
-        else:
-            sql = _HEATMAP_LOC_DEPT_SQL
+        the latest submission within the window. All other filters
+        (dept/loc/age/gender/theme) narrow the employee pool inside the
+        ``employees`` CTE so the buckets reflect the narrowed set."""
+        filters = filters or HrFilters()
+        sql = (
+            _HEATMAP_LOC_DEPT_DATE_SQL
+            if filters.has_date_window()
+            else _HEATMAP_LOC_DEPT_SQL
+        )
+        params = {"company_id": company_id, **filters.bind_values()}
 
         rows = (await self.db.execute(sql_text(sql), params)).all()
 
@@ -771,8 +1158,7 @@ class HrWellnessAnalyticsService:
         self,
         *,
         company_id: UUID,
-        date_from: Optional[date] = None,
-        date_to: Optional[date] = None,
+        filters: Optional[HrFilters] = None,
     ) -> dict:
         """Builds the six summary cards in a single pass.
 
@@ -796,14 +1182,13 @@ class HrWellnessAnalyticsService:
 
         Dimensions with no mapping return `value=None` on their card. An empty
         employee pool returns `value=None` on every card."""
-        use_date_branch = date_from is not None or date_to is not None
-        base_params: dict = {"company_id": company_id}
-        if use_date_branch:
-            base_params["date_from"] = date_from
-            base_params["date_to"] = date_to
-            kpi_sql = _SUMMARY_USER_KPI_SCORES_DATE_SQL
-        else:
-            kpi_sql = _SUMMARY_USER_KPI_SCORES_SQL
+        filters = filters or HrFilters()
+        base_params: dict = {"company_id": company_id, **filters.bind_values()}
+        kpi_sql = (
+            _SUMMARY_USER_KPI_SCORES_DATE_SQL
+            if filters.has_date_window()
+            else _SUMMARY_USER_KPI_SCORES_SQL
+        )
 
         # 1. Per-user (kpi_key -> score) — the shared base for every card.
         kpi_rows = (
@@ -988,3 +1373,137 @@ class HrWellnessAnalyticsService:
         return _round1(
             sum(per_user_scores) / Decimal(len(per_user_scores))
         )
+
+    # -----------------------------------------------------------------------
+    # Endpoint 6 — employee count (filter-aware badge)
+    # -----------------------------------------------------------------------
+
+    async def employee_count(
+        self, *, company_id: UUID, filters: Optional[HrFilters] = None
+    ) -> dict:
+        """Return both the unfiltered company headcount and the filtered
+        count so the HR Analytics filter strip can show "X of Y employees
+        in scope". Single round-trip via a COUNT(*) FILTER (...) expression.
+
+        Date and theme filters require a per-submission EXISTS check
+        (employees with no submission in the window are excluded even if
+        their demographics match)."""
+        filters = filters or HrFilters()
+        params = {"company_id": company_id, **filters.bind_values()}
+        sql = """
+        SELECT
+          COUNT(*) AS total,
+          COUNT(*) FILTER (
+            WHERE (CAST(:f_department AS TEXT) IS NULL OR d.name      = CAST(:f_department AS TEXT))
+              AND (CAST(:f_location   AS TEXT) IS NULL OR l.name      = CAST(:f_location   AS TEXT))
+              AND (CAST(:f_age_band   AS TEXT) IS NULL OR cu.age_band = CAST(:f_age_band   AS TEXT))
+              AND (CAST(:f_gender     AS TEXT) IS NULL OR cu.gender   = CAST(:f_gender     AS TEXT))
+              AND (
+                (CAST(:f_date_from AS DATE) IS NULL AND CAST(:f_date_to AS DATE) IS NULL)
+                OR EXISTS (
+                  SELECT 1 FROM employee_form_response efr_cnt
+                  WHERE efr_cnt.employee_email   = cu.email
+                    AND efr_cnt.is_deleted       = FALSE
+                    AND efr_cnt.company_id::uuid = cu.company_id
+                    AND (CAST(:f_date_from AS DATE) IS NULL
+                         OR efr_cnt.submitted_at >= CAST(:f_date_from AS DATE))
+                    AND (CAST(:f_date_to AS DATE) IS NULL
+                         OR efr_cnt.submitted_at <  CAST(:f_date_to AS DATE) + INTERVAL '1 day')
+                )
+              )
+              AND (
+                CAST(:f_theme_key AS UUID) IS NULL
+                OR EXISTS (
+                  SELECT 1
+                  FROM v_user_kpi_score uks_theme
+                  JOIN kpis k_theme
+                    ON  k_theme.kpi_key    = uks_theme.kpi_key
+                    AND k_theme.company_id = cu.company_id
+                  WHERE uks_theme.user_id = cu.id
+                    AND k_theme.theme_key = CAST(:f_theme_key AS UUID)
+                )
+              )
+          ) AS filtered
+        FROM company_users cu
+        JOIN companies c        ON c.id = cu.company_id
+        LEFT JOIN departments d ON d.id = cu.department_id
+        LEFT JOIN locations   l ON l.id = c.location_id
+        WHERE cu.company_id = :company_id
+          AND cu.is_active   = TRUE
+          AND cu.is_deleted  = FALSE
+        """
+        row = (await self.db.execute(sql_text(sql), params)).first()
+        total = int(row.total) if row and row.total is not None else 0
+        filtered = int(row.filtered) if row and row.filtered is not None else 0
+        return {"total": total, "filtered": filtered}
+
+    # -----------------------------------------------------------------------
+    # Endpoint 7 — headcount per dept + per location (filter-aware)
+    # -----------------------------------------------------------------------
+
+    async def headcount(
+        self, *, company_id: UUID, filters: Optional[HrFilters] = None
+    ) -> dict:
+        """Filter-narrowed headcount broken down by department and by
+        location. Single round-trip via UNION ALL on a shared filtered CTE.
+
+        Departments and locations with zero filtered employees are omitted
+        (the chart can fall back to the labels list returned by the other
+        endpoints when it needs to render an empty bar)."""
+        filters = filters or HrFilters()
+        params = {"company_id": company_id, **filters.bind_values()}
+        sql = f"""
+        WITH filtered_employees AS (
+            SELECT cu.id, cu.department_id, c.location_id
+            FROM company_users cu
+            JOIN companies c          ON c.id = cu.company_id
+            LEFT JOIN departments d   ON d.id = cu.department_id
+            LEFT JOIN locations   l   ON l.id = c.location_id
+            WHERE cu.company_id = :company_id
+              AND cu.is_active  = TRUE
+              AND cu.is_deleted = FALSE
+              {EMPLOYEE_DEMOGRAPHIC_FILTERS_SQL}
+              {THEME_SCOPE_FILTER_SQL}
+              AND (
+                (CAST(:f_date_from AS DATE) IS NULL AND CAST(:f_date_to AS DATE) IS NULL)
+                OR EXISTS (
+                  SELECT 1 FROM employee_form_response efr_cnt
+                  WHERE efr_cnt.employee_email   = cu.email
+                    AND efr_cnt.is_deleted       = FALSE
+                    AND efr_cnt.company_id::uuid = cu.company_id
+                    AND (CAST(:f_date_from AS DATE) IS NULL
+                         OR efr_cnt.submitted_at >= CAST(:f_date_from AS DATE))
+                    AND (CAST(:f_date_to AS DATE) IS NULL
+                         OR efr_cnt.submitted_at <  CAST(:f_date_to AS DATE) + INTERVAL '1 day')
+                )
+              )
+        )
+        SELECT 'dept' AS bucket, COALESCE(d.name, '') AS label, COUNT(*)::int AS count
+        FROM filtered_employees fe
+        LEFT JOIN departments d ON d.id = fe.department_id
+        WHERE fe.department_id IS NOT NULL
+        GROUP BY d.name
+
+        UNION ALL
+
+        SELECT 'loc' AS bucket, COALESCE(l.name, '') AS label, COUNT(*)::int AS count
+        FROM filtered_employees fe
+        LEFT JOIN locations l ON l.id = fe.location_id
+        WHERE fe.location_id IS NOT NULL
+        GROUP BY l.name
+        """
+        rows = (await self.db.execute(sql_text(sql), params)).all()
+        by_department: list[dict] = []
+        by_location: list[dict] = []
+        for bucket, label, count in rows:
+            entry = {"label": label or "", "count": int(count or 0)}
+            if bucket == "dept":
+                by_department.append(entry)
+            else:
+                by_location.append(entry)
+        by_department.sort(key=lambda b: b["label"])
+        by_location.sort(key=lambda b: b["label"])
+        return {
+            "by_department": by_department,
+            "by_location": by_location,
+        }

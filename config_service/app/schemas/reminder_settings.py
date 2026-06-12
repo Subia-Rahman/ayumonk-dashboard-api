@@ -106,3 +106,29 @@ class ReminderSettingsResponse(ReminderSettingsBase):
     snooze_until: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# GET /reminder-settings/log (Phase 6)
+# ---------------------------------------------------------------------------
+
+
+class ReminderLogEntry(BaseModel):
+    """One row from ``reminder_log`` — the dispatcher's send history.
+    Distinct from ``Notification`` (the bell-icon feed); this is the
+    "did the system actually fire this reminder?" record."""
+
+    id: UUID
+    reminder_type: str        # daily_challenge / streak_alert / program_ending / ...
+    channel: str              # email / push / whatsapp
+    status: str               # sent / failed / suppressed
+    details: Optional[str] = None
+    sent_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ReminderLogResponse(BaseModel):
+    """Envelope for ``GET /reminder-settings/log`` — bounded list."""
+
+    items: list[ReminderLogEntry]

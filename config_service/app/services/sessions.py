@@ -498,14 +498,65 @@ class SessionService:
             scoring = await scoring_repo.get_by_question_id_and_option(
                 question.id, answer.selected_option
             )
-            score = scoring.score if scoring else 0
+            raw_score = scoring.score if scoring else 0
+            # Spec §8: reverse-scored questions write `6 - raw` so
+            # downstream aggregates (Wellness Index, dimension scores)
+            # are correctly signed without every consumer re-applying
+            # the rule. The view + WellnessScoringService both rely on
+            # this being already-applied at write time.
+            if getattr(question, "reverse_code", False):
+                final_score = 6 - raw_score if raw_score is not None else 0
+            else:
+                final_score = raw_score
             await form_repo.create_answer(
                 EmployeeFormAnswer(
                     response_id=response_id,
                     question_code=question.question_code,
                     selected_option=answer.selected_option,
-                    score=score,
+                    score=final_score,
                 )
+            )
+
+        # Persist the headline Wellness Index for this submission. Failures
+        # here must not roll back the form-answer writes — log and continue
+        # so the user sees their submission accepted even if WI
+        # computation has a transient hiccup. The /wellness/index endpoint
+        # falls back to the previous submission when the latest row is
+        # missing.
+        try:
+            from config_service.app.services.wellness_scoring import (
+                WellnessScoringService,
+            )
+            await WellnessScoringService(db).persist_for_response(
+                response_id=response_id,
+                employee_email=payload.email,
+                company_id=company_id,
+            )
+        except Exception:
+            self.logger.exception(
+                "WELLNESS_INDEX_PERSIST_FAILED | response_id=%s | email=%s",
+                response_id,
+                payload.email,
+            )
+
+        # Run the two-tier suggestion engine and persist its picks. Same
+        # try/except contract — engine failure must not roll back the
+        # submission. /api/v1/suggestions/my falls back to the previous
+        # submission's picks when the latest run produced nothing.
+        try:
+            from config_service.app.services.suggestion_engine import (
+                SuggestionEngineService,
+            )
+            await SuggestionEngineService(db).compute_and_persist(
+                response_id=response_id,
+                employee_email=payload.email,
+                company_id=company_id,
+            )
+        except Exception:
+            self.logger.exception(
+                "SUGGESTION_ENGINE_FAILED | response_id=%s | email=%s",
+                response_id,
+                payload.email,
             )
 
         return SessionFormSubmissionResponse(response_id=response_id)

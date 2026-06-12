@@ -83,3 +83,32 @@ class KPIChallengeRepository:
         )
         res = await self.db.execute(stmt)
         return res.all()
+
+    async def get_by_id(self, mapping_id, company_id=None) -> KPIChallenge | None:
+        """Fetch a single non-deleted kpi_challenges row by id, optionally
+        scoped to a tenant. Returns None when missing or out-of-scope."""
+        stmt = select(KPIChallenge).where(
+            KPIChallenge.id == mapping_id,
+            KPIChallenge.is_deleted == False,
+        )
+        if company_id is not None:
+            stmt = stmt.where(KPIChallenge.company_id == company_id)
+        res = await self.db.execute(stmt)
+        return res.scalar_one_or_none()
+
+    async def update(self, mapping: KPIChallenge) -> KPIChallenge:
+        """Persist in-place edits on a KPIChallenge already attached to
+        the session. Caller is expected to have mutated the fields
+        already; this commits and refreshes."""
+        await self.db.commit()
+        await self.db.refresh(mapping)
+        return mapping
+
+    async def soft_delete(self, mapping: KPIChallenge) -> KPIChallenge:
+        """Mark the mapping as deleted + inactive. Returns the refreshed
+        row so callers can snapshot the final state into an audit log."""
+        mapping.is_deleted = True
+        mapping.is_active = False
+        await self.db.commit()
+        await self.db.refresh(mapping)
+        return mapping

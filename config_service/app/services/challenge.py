@@ -15,6 +15,7 @@ from config_service.app.schemas.challenge import (
     ChallengeResponse,
     ChallengeUpdateRequest,
     KPIChallengeActiveResponse,
+    KPIChallengeUpdateRequest,
 )
 
 
@@ -197,6 +198,76 @@ class ChallengeService:
             company_id=challenge.company_id,
         )
         return self._to_mapping_response(mapping_rows[0])
+
+    async def update_kpi_mapping(
+        self,
+        *,
+        mapping_id: UUID,
+        payload: KPIChallengeUpdateRequest,
+        company_id: UUID | None = None,
+    ) -> tuple[ChallengeKPIMappingResponse, dict]:
+        """Patch start_date / end_date / is_active on a single kpi_challenges
+        row. Returns ``(response, old_snapshot)`` so the route handler can
+        feed the snapshot into an audit log.
+
+        Re-validates the merged date range — request that would invert
+        start/end is rejected with 422 even if only one date is patched
+        (the new date is compared against the existing other date)."""
+        mapping = await self.kpi_challenge_repo.get_by_id(mapping_id, company_id)
+        if not mapping:
+            raise BusinessException(message="KPI mapping not found", status_code=404)
+
+        old_snapshot = {
+            "start_date": mapping.start_date,
+            "end_date": mapping.end_date,
+            "is_active": bool(mapping.is_active),
+        }
+
+        if payload.start_date is not None:
+            mapping.start_date = payload.start_date
+        if payload.end_date is not None:
+            mapping.end_date = payload.end_date
+        if payload.is_active is not None:
+            mapping.is_active = payload.is_active
+
+        # Merged-range validation. ``end_date IS NULL`` means open-ended,
+        # which is always valid against any start_date.
+        if (
+            mapping.end_date is not None
+            and mapping.start_date is not None
+            and mapping.start_date > mapping.end_date
+        ):
+            raise BusinessException(
+                message="start_date cannot be greater than end_date",
+                status_code=422,
+            )
+
+        await self.kpi_challenge_repo.update(mapping)
+        return self._to_mapping_response(mapping), old_snapshot
+
+    async def delete_kpi_mapping(
+        self,
+        *,
+        mapping_id: UUID,
+        company_id: UUID | None = None,
+    ) -> tuple[ChallengeKPIMappingResponse, dict]:
+        """Soft-delete a kpi_challenges row (is_deleted=TRUE, is_active=FALSE).
+
+        Returns ``(response, old_snapshot)`` mirroring update_kpi_mapping —
+        old_snapshot captures the pre-delete state for the audit log."""
+        mapping = await self.kpi_challenge_repo.get_by_id(mapping_id, company_id)
+        if not mapping:
+            raise BusinessException(message="KPI mapping not found", status_code=404)
+
+        old_snapshot = {
+            "kpi_key": mapping.kpi_key,
+            "challenge_key": mapping.challenge_key,
+            "start_date": mapping.start_date,
+            "end_date": mapping.end_date,
+            "is_active": bool(mapping.is_active),
+        }
+        await self.kpi_challenge_repo.soft_delete(mapping)
+        return self._to_mapping_response(mapping), old_snapshot
 
     async def list_active_for_kpi(
         self,
