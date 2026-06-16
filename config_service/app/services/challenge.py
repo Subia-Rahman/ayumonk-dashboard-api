@@ -173,12 +173,16 @@ class ChallengeService:
         if not challenge:
             raise BusinessException(message="Challenge not found", status_code=404)
 
-        challenge.is_active = False
-        challenge.is_deleted = True
-        challenge = await self.challenge_repo.update(challenge)
         mappings = await self.kpi_challenge_repo.list_by_challenge(challenge_key)
         start_date, end_date = self._compute_date_range(mappings)
         kpi_keys = self._compute_kpi_keys(mappings)
+
+        for mapping in mappings:
+            await self.kpi_challenge_repo.soft_delete(mapping)
+
+        challenge.is_active = False
+        challenge.is_deleted = True
+        challenge = await self.challenge_repo.update(challenge)
         return self._to_response(challenge, start_date=start_date, end_date=end_date, kpi_keys=kpi_keys)
 
     async def add_kpi_mapping(

@@ -132,20 +132,48 @@ class ReminderDispatcher:
             repo = ReminderSettingsRepository(session)
             all_entities = await repo.list_active_due()
 
-        # Step 2: pure-Python filter (no I/O).
+        logger.info(
+            "REMINDER_DISPATCH_START | now_utc=%s | enabled_rows=%s | "
+            "window_minutes=%s",
+            now_utc.isoformat(), len(all_entities), self.time_window_minutes,
+        )
+
+        # Step 2: pure-Python filter (no I/O). Logs one REMINDER_CANDIDATE
+        # line per entity with the full decision context — flip this from
+        # INFO to DEBUG once the "all users at the same time" bug is
+        # diagnosed. The line includes every value the filter checked so
+        # grep-by-user_id reconstructs why a reminder fired (or didn't)
+        # at any given tick.
         candidates: list[tuple[ReminderSettings, list[str], object]] = []
         for entity in all_entities:
-            if ReminderSettingsService.is_reminder_suppressed(entity, now_utc):
-                continue
-            if not self._is_within_time_window(entity, now_utc):
-                continue
+            suppressed = ReminderSettingsService.is_reminder_suppressed(
+                entity, now_utc
+            )
+            within_window = self._is_within_time_window(entity, now_utc)
             user_local_date = self._user_local_date(entity, now_utc)
-            if entity.last_dispatched_on == user_local_date:
-                continue
+            local_now = self._user_local_now(entity, now_utc)
+            already_dispatched = entity.last_dispatched_on == user_local_date
             reminder_types = self._collect_active_reminder_types(entity)
-            if not reminder_types:
-                continue
-            candidates.append((entity, reminder_types, user_local_date))
+            will_dispatch = (
+                not suppressed
+                and within_window
+                and not already_dispatched
+                and bool(reminder_types)
+            )
+
+            logger.info(
+                "REMINDER_CANDIDATE | user_id=%s | reminder_time=%s | tz=%s | "
+                "local_now=%s | within_window=%s | suppressed=%s | "
+                "last_dispatched_on=%s | local_today=%s | types=%s | "
+                "will_dispatch=%s",
+                entity.user_id, entity.reminder_time, entity.timezone,
+                local_now.strftime("%Y-%m-%d %H:%M"), within_window, suppressed,
+                entity.last_dispatched_on, user_local_date, reminder_types,
+                will_dispatch,
+            )
+
+            if will_dispatch:
+                candidates.append((entity, reminder_types, user_local_date))
 
         if not candidates:
             logger.info("No reminders due at %s", now_utc.isoformat())
@@ -379,6 +407,19 @@ class ReminderDispatcher:
         except ZoneInfoNotFoundError:
             tz = ZoneInfo("UTC")
         return now_utc.replace(tzinfo=timezone.utc).astimezone(tz).date()
+
+    @staticmethod
+    def _user_local_now(entity: ReminderSettings, now_utc: datetime) -> datetime:
+        """Symmetric counterpart to _user_local_date — returns the full
+        datetime in the user's tz. Only used by the REMINDER_CANDIDATE
+        diagnostic log so the operator can see what wall-clock time the
+        dispatcher *thought* the user was on when it evaluated the
+        time-window check."""
+        try:
+            tz = ZoneInfo(entity.timezone or "UTC")
+        except ZoneInfoNotFoundError:
+            tz = ZoneInfo("UTC")
+        return now_utc.replace(tzinfo=timezone.utc).astimezone(tz)
 
     def _is_within_time_window(
         self, entity: ReminderSettings, now_utc: datetime

@@ -88,6 +88,7 @@ JOIN kpis k       ON k.kpi_key = kc.kpi_key
 JOIN challenges ch ON ch.challenge_key = kc.challenge_key
 LEFT JOIN themes t ON t.theme_key = k.theme_key
 WHERE kc.is_deleted = FALSE
+  AND ch.is_deleted = FALSE
   AND (CAST(:company_id AS UUID) IS NULL OR kc.company_id = CAST(:company_id AS UUID))
   AND (CAST(:kpi_key    AS UUID) IS NULL OR kc.kpi_key    = CAST(:kpi_key    AS UUID))
 ORDER BY kc.start_date ASC, k.display_name ASC, ch.name ASC
