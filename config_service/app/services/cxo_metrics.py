@@ -1,3 +1,4 @@
+from __future__ import annotations
 """CXO metric configuration service — validation, snapshots, engagement batch.
 
 Split intentionally from cxo_seeder.py: the seeder owns the "what are the

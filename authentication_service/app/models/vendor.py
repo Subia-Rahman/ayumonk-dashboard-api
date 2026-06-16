@@ -1,3 +1,4 @@
+from __future__ import annotations
 from sqlalchemy import Column, Integer, String, Enum
 
 from authentication_service.app.core.db import Base

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from authentication_service.app.repositories.user_repo import AuthUserRepository
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.config import settings

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from uuid import UUID
 
 from config_service.app.core.business_exceptions import BusinessException

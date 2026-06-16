@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Location master helpers.
 
 `get_or_create_location` is the single entry point used by both the

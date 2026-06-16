@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Admin endpoints for the CXO metric configuration UI.
 
 Route layout matches the established `/api/v1/admin/...` convention (see

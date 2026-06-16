@@ -1,3 +1,4 @@
+from __future__ import annotations
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.suggestion import Suggestion
 from config_service.app.repositories.suggestions import SuggestionRepository

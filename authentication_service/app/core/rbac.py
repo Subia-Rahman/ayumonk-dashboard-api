@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Access-control dependencies for FastAPI endpoints.
 
 Two patterns are supported:

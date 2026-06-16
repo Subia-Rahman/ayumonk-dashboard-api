@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Notifications seed script.
 
 Inserts a representative set of notification rows for one user so the

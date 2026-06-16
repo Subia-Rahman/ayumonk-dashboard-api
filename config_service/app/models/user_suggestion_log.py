@@ -1,3 +1,4 @@
+from __future__ import annotations
 """SQLAlchemy model for ``user_suggestion_log``.
 
 Durable record of what the two-tier suggestion engine served to each

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from config_service.app.models.kpi_scoring import KPIScoring

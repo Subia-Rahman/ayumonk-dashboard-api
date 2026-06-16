@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Schemas for `GET /api/v1/challenges/schedule`.
 
 Returns the full kpi_challenges schedule timeline grouped two ways:

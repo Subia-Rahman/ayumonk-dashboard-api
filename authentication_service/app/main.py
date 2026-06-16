@@ -1,3 +1,4 @@
+from __future__ import annotations
 from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 from authentication_service.app.api.v1.routers import router as api_router

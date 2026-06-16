@@ -1,3 +1,4 @@
+from __future__ import annotations
 from datetime import datetime, timezone
 from config_service.app.core.config import APP_TZ
 from pydantic import  BaseModel, field_serializer

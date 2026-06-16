@@ -1,3 +1,4 @@
+from __future__ import annotations
 from datetime import datetime, time as dtime
 from authentication_service.app.services.access_control_service import AccessControlService
 

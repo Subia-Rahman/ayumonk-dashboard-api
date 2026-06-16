@@ -1,3 +1,4 @@
+from __future__ import annotations
 """SQLAlchemy model for ``user_mood_log``.
 
 Append-only daily 5-emoji mood check-in history. POST /api/v1/wellness/mood

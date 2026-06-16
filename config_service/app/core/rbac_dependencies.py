@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Bridge dependencies that combine legacy auth (User by email) with the
 3-layer RBAC architecture defined in authentication_service.
 

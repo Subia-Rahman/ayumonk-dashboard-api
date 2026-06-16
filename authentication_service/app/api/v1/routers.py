@@ -1,3 +1,4 @@
+from __future__ import annotations
 from fastapi import APIRouter
 from .auth import router as auth_router
 from .access_control import router as access_control_router

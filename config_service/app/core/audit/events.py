@@ -1,3 +1,4 @@
+from __future__ import annotations
 from config_service.app.core.audit.mixin import AuditMixin
 from sqlalchemy import event
 from sqlalchemy.orm import Session

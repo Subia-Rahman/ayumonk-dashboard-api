@@ -1,3 +1,4 @@
+from __future__ import annotations
 """RBAC seed script.
 
 Seeds menus, permissions, role-menu access mappings, default policies and

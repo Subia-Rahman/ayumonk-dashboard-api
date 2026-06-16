@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Phase 4 — Two-tier suggestion engine + persistence.
 
 This module owns the **write-time** suggestion engine — it runs once per

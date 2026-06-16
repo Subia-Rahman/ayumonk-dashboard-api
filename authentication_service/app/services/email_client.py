@@ -1,3 +1,4 @@
+from __future__ import annotations
 import httpx
 
 from authentication_service.app.core.config import settings

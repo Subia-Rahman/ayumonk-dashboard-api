@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Seeder for the default RBAC rows attached to every newly created tenant.
 
 `assign_default_company_data` is invoked from inside the company-creation

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """User-facing suggestion endpoints (Phase 4).
 
   * GET  /api/v1/suggestions/my            — read engine output

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Shared filter helpers for the HR Analytics endpoints.
 
 Every chart on the HR Analytics dashboard shares one filter panel —

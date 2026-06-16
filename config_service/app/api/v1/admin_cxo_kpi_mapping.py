@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Admin CRUD endpoints for `cxo_metric_kpi_mapping`.
 
 Per-company KPI weights attached to a `cxo_metric_master` row. A mapping is a

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Schemas for the user-facing suggestions endpoints (Phase 4).
 
   * GET  /api/v1/suggestions/my

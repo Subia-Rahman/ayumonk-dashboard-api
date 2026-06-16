@@ -1,3 +1,4 @@
+from __future__ import annotations
 from config_service.app.core.business_exceptions import BusinessException
 from sqlalchemy.exc import IntegrityError
 from config_service.app.core.config import settings

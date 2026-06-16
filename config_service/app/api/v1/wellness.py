@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Wellness endpoints (Phase 3).
 
   * GET  /api/v1/wellness/index — returns the headline donut value +

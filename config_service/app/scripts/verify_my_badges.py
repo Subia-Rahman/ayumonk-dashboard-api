@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Smoke test for GET /dashboard/me/badges (service layer, no FastAPI client).
 

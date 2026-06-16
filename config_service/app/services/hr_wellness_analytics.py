@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Service backing the HR wellness analytics endpoints.
 
 Three feeds powering the HR Analytics dashboard's "Wellness by Dimension" and

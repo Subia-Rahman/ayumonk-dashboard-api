@@ -1,3 +1,4 @@
+from __future__ import annotations
 from logging import getLogger
 from config_service.app.core.business_exceptions import BusinessException
 from fastapi import HTTPException, Request

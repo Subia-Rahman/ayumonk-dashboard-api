@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Thin wrapper around ``AuditLogService.log()`` that never raises.
 
 Phase-2 audit-log wiring fires from inside admin endpoint handlers, *after*

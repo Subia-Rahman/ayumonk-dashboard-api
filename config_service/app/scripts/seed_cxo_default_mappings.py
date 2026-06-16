@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Seed default CXO metric mappings for one or every existing company.
 
 Reads the platform defaults defined in

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """CRUD endpoints for `wellness_dimension_kpi_mapping` — per-dimension KPI
 weights, tenant-scoped via the parent dimension's `company_id`.
 

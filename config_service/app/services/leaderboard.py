@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Service backing GET /api/v1/dashboard/leaderboard.
 
 Returns the weekly Challenges-tab leaderboard for the requesting employee's

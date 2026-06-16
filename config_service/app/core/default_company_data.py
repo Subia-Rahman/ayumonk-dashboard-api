@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Static defaults seeded into every new company.
 
 These constants are the data-only definition of what RBAC rows a newly

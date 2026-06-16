@@ -1,3 +1,4 @@
+from __future__ import annotations
 from config_service.app.core.audit.mixin import AuditMixin
 from config_service.app.core.db import Base
 from sqlalchemy import Column, ForeignKey, Integer, String

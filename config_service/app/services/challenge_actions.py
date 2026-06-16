@@ -1,3 +1,4 @@
+from __future__ import annotations
 from datetime import datetime, timedelta
 
 from sqlalchemy import distinct, func, or_, select

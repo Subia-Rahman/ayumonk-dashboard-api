@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Seed per-KPI tier badges for a company.
 

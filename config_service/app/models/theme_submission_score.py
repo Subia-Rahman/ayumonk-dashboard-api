@@ -1,3 +1,4 @@
+from __future__ import annotations
 """SQLAlchemy model for ``theme_submission_scores``.
 
 One row per wellness-form submission, populated synchronously inside

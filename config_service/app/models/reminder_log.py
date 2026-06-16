@@ -1,3 +1,4 @@
+from __future__ import annotations
 """SQLAlchemy model for ``reminder_log``.
 
 Durable, append-only record of every reminder the dispatcher fires.

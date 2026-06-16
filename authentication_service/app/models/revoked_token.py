@@ -1,3 +1,4 @@
+from __future__ import annotations
 from sqlalchemy import BigInteger, Column, DateTime, Integer, String
 from sqlalchemy.sql import func
 

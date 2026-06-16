@@ -1,3 +1,4 @@
+from __future__ import annotations
 import logging
 
 from authentication_service.app.core.db import get_db

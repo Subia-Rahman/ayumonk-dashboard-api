@@ -1,3 +1,4 @@
+from __future__ import annotations
 from contextlib import AsyncExitStack, asynccontextmanager
 
 from fastapi import FastAPI

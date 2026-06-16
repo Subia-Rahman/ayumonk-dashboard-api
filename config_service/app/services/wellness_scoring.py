@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Phase 3 — Wellness Index computation + persistence.
 
 This service is the single source of truth for the

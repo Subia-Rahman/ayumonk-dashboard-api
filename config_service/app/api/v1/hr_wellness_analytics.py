@@ -1,3 +1,4 @@
+from __future__ import annotations
 """HR Analytics — Wellness by Dimension and Gender-wise chart feeds.
 
 All three endpoints live in a single router because they power one chart

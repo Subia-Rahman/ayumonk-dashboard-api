@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Auth dependencies specific to the CXO metric endpoints.
 
 The base project uses three overlapping role identifiers:

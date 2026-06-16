@@ -1,3 +1,4 @@
+from __future__ import annotations
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.models.kpi import KPI
 from config_service.app.models.kpi_questions import KPIQuestion

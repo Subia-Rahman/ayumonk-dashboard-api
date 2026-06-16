@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 Demo gamification seed for user EMP01.
 

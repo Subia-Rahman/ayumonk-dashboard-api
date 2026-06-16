@@ -1,3 +1,4 @@
+from __future__ import annotations
 from .company import Company
 from .company_users import CompanyUser
 from .employee_form_answer import EmployeeFormAnswer

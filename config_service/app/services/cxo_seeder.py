@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Default CXO mapping seeder.
 
 Inserts (or updates, on conflict) the platform-default KPI / signal weights

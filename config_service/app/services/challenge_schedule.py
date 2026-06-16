@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Service backing ``GET /api/v1/challenges/schedule``.
 
 Reads the full schedule from ``kpi_challenges`` joined with ``kpis``,

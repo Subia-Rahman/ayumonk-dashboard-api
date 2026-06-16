@@ -1,3 +1,4 @@
+from __future__ import annotations
 import uuid
 from sqlalchemy import Column, Integer, ForeignKey,String
 from sqlalchemy.dialects.postgresql import UUID

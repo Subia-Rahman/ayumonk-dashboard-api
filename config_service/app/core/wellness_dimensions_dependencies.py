@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Auth dependencies for the Wellness Dimension configuration endpoints.
 
 Access rules (per the spec):

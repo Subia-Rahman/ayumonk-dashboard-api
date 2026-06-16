@@ -1,3 +1,4 @@
+from __future__ import annotations
 from config_service.app.core.custom_loggers import get_file_logger
 from config_service.app.core.response import APIResponse
 from config_service.app.core.response_utils import error_response, success_response

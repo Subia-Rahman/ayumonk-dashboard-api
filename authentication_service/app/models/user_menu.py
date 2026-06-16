@@ -1,3 +1,4 @@
+from __future__ import annotations
 from sqlalchemy import Column, Integer, ForeignKey, Boolean, String, CheckConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from authentication_service.app.core.db import Base

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Per-type eligibility checks for the reminder dispatcher (Phases 6 & 6.5).
 
 The dispatcher today fires every enabled reminder toggle for any user

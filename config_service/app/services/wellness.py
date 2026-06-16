@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Read/write services for the wellness endpoints (Phase 3).
 
   * WellnessIndexService — backs ``GET /api/v1/wellness/index``. Lookup

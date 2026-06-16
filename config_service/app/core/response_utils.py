@@ -1,3 +1,4 @@
+from __future__ import annotations
 from config_service.app.core.response import APIResponse
 from fastapi import HTTPException
 

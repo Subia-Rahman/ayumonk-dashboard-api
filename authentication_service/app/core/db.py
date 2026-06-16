@@ -1,3 +1,4 @@
+from __future__ import annotations
 from authentication_service.app.schemas.auth import TokenUser
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker, declarative_base

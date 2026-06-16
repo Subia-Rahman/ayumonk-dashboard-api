@@ -1,3 +1,4 @@
+from __future__ import annotations
 from http.client import HTTPException
 from config_service.app.core.business_exceptions import BusinessException
 from config_service.app.core.exceptions import http_exception_handler, validation_exception_handler, unhandled_exception_handler,business_exception_handler

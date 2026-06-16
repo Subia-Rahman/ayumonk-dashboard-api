@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Schemas for the wellness endpoints (Phase 3).
 
   * GET  /api/v1/wellness/index — donut centre + risk band + delta

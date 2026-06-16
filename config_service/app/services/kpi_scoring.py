@@ -1,3 +1,4 @@
+from __future__ import annotations
 from config_service.app.models.kpi_scoring import KPIScoring
 
 

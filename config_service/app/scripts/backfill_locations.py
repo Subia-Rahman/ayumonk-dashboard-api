@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Backfill `companies.location_id` from the legacy `companies.location` text.
 
 Reuses `get_or_create_location` so the normalization rules can't drift

@@ -1,3 +1,4 @@
+from __future__ import annotations
 from sqlalchemy import Column, DateTime, Boolean, Integer
 from datetime import datetime
 

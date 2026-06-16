@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Service backing GET /api/v1/hr/cxo-metrics.
 
 Per-employee CXO metric score:

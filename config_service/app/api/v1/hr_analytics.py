@@ -1,3 +1,4 @@
+from __future__ import annotations
 """HR analytics endpoints (CXO metrics by dept / age band).
 
 Mounted under `/api/v1/hr/...` — separate prefix from `/dashboard/...` since

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """CRUD endpoints for `wellness_dimension` — per-company catalog of wellness
 dimensions that group KPIs (sleep, stress, etc.).
 

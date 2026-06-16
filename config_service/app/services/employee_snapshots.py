@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Service backing GET /api/v1/dashboard/employee-snapshots.
 
 Returns one row per active employee for a company with all wellness/CXO

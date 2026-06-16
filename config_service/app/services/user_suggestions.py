@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Read/write services for the user-facing suggestions endpoints (Phase 4).
 
   * UserSuggestionsService.get_my_latest — backs ``GET /suggestions/my``.

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 End-to-end verification for the streak/XP/badge expansion on
 POST /config/api/v1/dashboard/challenges/action.
